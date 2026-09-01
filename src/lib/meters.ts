@@ -1,4 +1,4 @@
-import type { EngineId, LimitWindowKind, MeterState, Usage } from "../types";
+import type { EngineId, MeterState, Usage } from "../types";
 import { ENGINE_ORDER, windowRank } from "./engines";
 
 export type MeterLevel = "unknown" | "ok" | "tight" | "near" | "hit";
@@ -84,8 +84,4 @@ export function groupMeters(meters: MeterState[]): EngineMeters[] {
       ),
     }),
   );
-}
-
-export function defaultWindow(windows: MeterState[]): LimitWindowKind | null {
-  return windows.length > 0 ? windows[0].window : null;
 }

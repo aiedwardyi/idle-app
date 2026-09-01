@@ -57,6 +57,9 @@ describe("MeterRow", () => {
 
     expect(screen.getByText("limit hit")).toBeInTheDocument();
     expect(screen.getByText(/back in/)).toBeInTheDocument();
+    // a clock would imply there is still time on the window
+    expect(document.querySelector('[data-icon="blocked"]')).toBeInTheDocument();
+    expect(document.querySelector('[data-icon="near"]')).toBeNull();
     expect(screen.getByLabelText("Claude has no headroom left")).toBeDisabled();
   });
 
@@ -97,6 +100,8 @@ describe("MeterRow", () => {
 
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.getByText("no estimate")).toBeInTheDocument();
+    expect(document.querySelector('[data-icon="unknown"]')).toBeInTheDocument();
+    expect(document.querySelector('[data-icon="near"]')).toBeNull();
   });
 
   test("clicking a window option reports that window up", async () => {

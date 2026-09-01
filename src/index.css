@@ -8,13 +8,13 @@
 :root {
   color-scheme: light dark;
 
-  --w-surface: rgba(255, 255, 255, 0.58);
-  --w-surface-2: rgba(255, 255, 255, 0.42);
+  --w-surface: rgba(255, 255, 255, 0.74);
+  --w-surface-2: rgba(255, 255, 255, 0.5);
   --w-hair: rgba(255, 255, 255, 0.75);
   --w-ring: rgba(26, 23, 37, 0.1);
   --w-ink: #191626;
   --w-ink-2: #514c66;
-  --w-ink-3: #837e96;
+  --w-ink-3: #6b6681;
   --w-track: rgba(26, 23, 37, 0.11);
   --w-shadow: 0 22px 60px -14px rgba(26, 23, 37, 0.42);
 
@@ -26,13 +26,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --w-surface: rgba(48, 42, 66, 0.56);
-    --w-surface-2: rgba(60, 53, 80, 0.4);
+    --w-surface: rgba(40, 35, 56, 0.74);
+    --w-surface-2: rgba(60, 53, 80, 0.5);
     --w-hair: rgba(255, 255, 255, 0.18);
     --w-ring: rgba(255, 255, 255, 0.1);
     --w-ink: #f6f4fb;
     --w-ink-2: #c0bad2;
-    --w-ink-3: #918ba6;
+    --w-ink-3: #a7a2ba;
     --w-track: rgba(255, 255, 255, 0.13);
     --w-shadow: 0 26px 70px -16px rgba(0, 0, 0, 0.72);
 
@@ -46,6 +46,7 @@ body {
   margin: 0;
   overflow: hidden;
   background: transparent;
+  box-sizing: border-box;
   font-family:
     system-ui,
     -apple-system,
@@ -78,6 +79,16 @@ body {
     align-items: center;
     gap: 10px;
     padding: 10px 12px 8px;
+    user-select: none;
+  }
+
+  /* data-tauri-drag-region only fires for the element it sits on — a press on a
+     child is the child's event, so the title text used to swallow the drag and
+     only the strip's padding worked. Making the text transparent to the pointer
+     hands those presses back to the strip. The action buttons are siblings, not
+     children, so they keep their own hit testing. */
+  .brand {
+    pointer-events: none;
   }
 
   .brand {
@@ -280,23 +291,29 @@ body {
     font-size: 0.61rem;
     color: var(--w-ink-3);
   }
+  /* The word stays in text ink and the icon carries the colour. Amber and
+     orange on a light surface do not clear 3:1 as text, and a state that is
+     hard to read is worse than one with no colour at all. */
   .state {
     display: inline-flex;
     align-items: center;
     gap: 3px;
     font-weight: 500;
+    color: var(--w-ink-2);
+  }
+  .state svg {
     color: var(--accent);
   }
-  [data-level="tight"] .state {
+  [data-level="tight"] .state svg {
     color: var(--st-warn);
   }
-  [data-level="near"] .state {
+  [data-level="near"] .state svg {
     color: var(--st-serious);
   }
-  [data-level="hit"] .state {
+  [data-level="hit"] .state svg {
     color: var(--st-crit);
   }
-  [data-level="unknown"] .state {
+  [data-level="unknown"] .state svg {
     color: var(--w-ink-3);
   }
   .resets {

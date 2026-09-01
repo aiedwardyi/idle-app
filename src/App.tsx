@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { EngineId, LimitWindowKind } from "./types";
 import { MOCK_METERS, MOCK_TASKS } from "./mocks";
 import { groupMeters, levelFor, usedPct } from "./lib/meters";
@@ -19,11 +19,26 @@ function App() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
 
   const groups = useMemo(() => groupMeters(MOCK_METERS), []);
-  const now = new Date();
 
-  const queued = MOCK_TASKS.filter(
-    (task) => task.status === "queued" || task.status === "running",
-  ).length;
+  // The reset countdowns are relative to now, so the clock has to advance on
+  // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
+  // interaction happens to re-render it. A minute is the display granularity.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Finished, failed and discarded tasks are history, not queue. The header
+  // count and the queue screen read from the same list so they cannot disagree.
+  const active = useMemo(
+    () =>
+      MOCK_TASKS.filter(
+        (task) => task.status === "queued" || task.status === "running",
+      ),
+    [],
+  );
+  const queued = active.length;
 
   const live = groups.filter((group) => {
     if (!running[group.engine]) return false;
@@ -67,7 +82,7 @@ function App() {
             onToggleRun={toggleRun}
           />
         )}
-        {screen === "tasks" && <Tasks tasks={MOCK_TASKS} />}
+        {screen === "tasks" && <Tasks tasks={active} />}
         {screen === "settings" && (
           <Settings
             alwaysOnTop={alwaysOnTop}

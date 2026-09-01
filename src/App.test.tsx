@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
 
 const row = (name: string) =>
@@ -17,6 +17,45 @@ describe("widget shell", () => {
   test("starts on the widget screen, paused", () => {
     render(<App />);
     expect(screen.getByText(/3 queued · paused/i)).toBeInTheDocument();
+  });
+});
+
+describe("window dragging", () => {
+  test("the title strip is a drag region and its text does not block it", () => {
+    render(<App />);
+    const strip = document.querySelector("[data-tauri-drag-region]");
+    expect(strip).toBeInTheDocument();
+
+    // the brand text sits inside the strip, so it must not take the pointer
+    const brand = strip?.querySelector(".brand");
+    expect(brand).toBeInTheDocument();
+
+    // the action buttons are siblings of the text, so they stay clickable
+    expect(
+      strip?.querySelector('.actions [aria-label="Settings"]'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("the reset countdown", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("advances on its own, with no interaction", async () => {
+    vi.useFakeTimers();
+    render(<App />);
+
+    const resets = () =>
+      row("Claude").querySelector(".resets")?.textContent ?? "";
+    const before = resets();
+    expect(before).toMatch(/resets in/);
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(resets()).not.toBe(before);
   });
 });
 

@@ -12,13 +12,15 @@ import {
 } from "../lib/meters";
 import { Icon } from "./Icon";
 
-const LEVEL_ICON: Record<MeterLevel, "ok" | "warn" | "near"> = {
-  unknown: "near",
+// A clock means "there is still time"; an exhausted meter and an unknown one
+// both had it, and both were wrong about it.
+const LEVEL_ICON = {
+  unknown: "unknown",
   ok: "ok",
   tight: "warn",
   near: "near",
-  hit: "near",
-};
+  hit: "blocked",
+} as const satisfies Record<MeterLevel, string>;
 
 type Props = {
   group: EngineMeters;

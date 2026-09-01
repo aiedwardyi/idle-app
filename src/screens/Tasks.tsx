@@ -1,5 +1,6 @@
 import type { Task } from "../types";
 import { ENGINE_LABEL } from "../lib/engines";
+import { folderName } from "../lib/paths";
 
 function engineLabel(task: Task): string {
   return task.engine.type === "auto"
@@ -20,7 +21,7 @@ export function Tasks({ tasks }: { tasks: Task[] }) {
           <span className="meta">
             <span className="dot" data-status={task.status} />
             {task.status} · {task.size.toUpperCase()} · {engineLabel(task)} ·{" "}
-            {task.folder.split("/").slice(-1)[0]}
+            {folderName(task.folder)}
           </span>
         </div>
       ))}
