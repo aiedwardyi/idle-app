@@ -12,6 +12,7 @@ fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     match mode.as_str() {
         "emit" => emit(),
+        "burst" => burst(),
         "malformed" => malformed(),
         "partial" => partial(),
         "sleep" => sleep_forever(),
@@ -35,6 +36,15 @@ fn emit() {
     say(r#"{"msg":"one"}"#);
     say(r#"{"msg":"two"}"#);
     say(r#"{"msg":"three"}"#);
+}
+
+/// Several JSON lines in one write, then exit with no delay. Used to
+/// catch a race where child.wait() is observed before stdout is drained.
+fn burst() {
+    let mut out = std::io::stdout();
+    out.write_all(b"{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n{\"n\":4}\n{\"n\":5}\n")
+        .unwrap();
+    out.flush().unwrap();
 }
 
 /// A valid line, a malformed line, then another valid line.

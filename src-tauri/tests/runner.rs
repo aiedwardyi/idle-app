@@ -378,3 +378,41 @@ async fn dropping_handle_stops_the_child() {
     drop(handle);
     wait_until_dead(pid).await;
 }
+
+#[tokio::test]
+#[serial]
+async fn burst_exit_drains_every_stdout_line() {
+    let expected = vec![
+        r#"{"n":1}"#,
+        r#"{"n":2}"#,
+        r#"{"n":3}"#,
+        r#"{"n":4}"#,
+        r#"{"n":5}"#,
+    ];
+    for i in 0..50 {
+        let run_id = format!("r-burst-{i}");
+        let mut handle = spawn_fake("burst", &ctx(&run_id, 30));
+        let events = collect(&mut handle).await;
+        assert_eq!(handle.wait().await, ExitReason::Ok, "iteration {i}");
+        assert_eq!(
+            events.first(),
+            Some(&RunEvent::Started {
+                run_id: run_id.clone(),
+            }),
+            "iteration {i}"
+        );
+        let lines: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::Output { line, .. } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, expected, "iteration {i} dropped stdout: {events:?}");
+        assert_eq!(
+            events.last(),
+            Some(&RunEvent::Finished { run_id, ok: true }),
+            "iteration {i}"
+        );
+    }
+}

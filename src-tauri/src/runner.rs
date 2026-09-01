@@ -138,6 +138,8 @@ async fn drive(
     // Drain stderr concurrently with stdout so a child that fills one pipe
     // while we block on the other cannot deadlock. stderr lines surface as
     // Error events: loud and traceable, per the malformed line rationale.
+    // stderr lines and JSON parse failures currently share RunEvent::Error,
+    // so adapters cannot distinguish them. Flag for PR-05; no new variant here.
     let stderr_tx = tx.clone();
     let stderr_run_id = run_id.clone();
     let stderr_task = tokio::spawn(async move {
@@ -181,7 +183,10 @@ async fn drive(
                 early_exit = Some(ExitReason::Timeout);
                 stop_child(&mut child);
             },
-            status = child.wait() => break status,
+            // Do not observe exit until stdout has hit EOF. select picks
+            // randomly among ready branches, so a child that writes and
+            // exits quickly can otherwise drop unread buffered lines.
+            status = child.wait(), if stdout_done => break status,
         }
     };
     let _ = stderr_task.await;
