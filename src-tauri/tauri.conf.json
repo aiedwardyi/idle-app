@@ -12,14 +12,26 @@
   "app": {
     "windows": [
       {
-        "title": "idle-app",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "idle",
+        "width": 384,
+        "height": 348,
+        "minWidth": 300,
+        "minHeight": 210,
+        "maxWidth": 620,
+        "maxHeight": 600,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "alwaysOnTop": false,
+        "visible": true
       }
     ],
     "security": {
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
