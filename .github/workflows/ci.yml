@@ -78,9 +78,9 @@ jobs:
       - name: No untracked generated TypeScript
         shell: bash
         run: |
-          status=$(git status --porcelain -- src/types/generated)
-          if [ -n "$status" ]; then
-            echo "$status"
+          untracked=$(git ls-files --others --exclude-standard -- src/types/generated)
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
             exit 1
           fi
 
