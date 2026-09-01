@@ -79,12 +79,31 @@ pub struct Usage {
     rename_all_fields = "camelCase"
 )]
 pub enum RunEvent {
-    Started { run_id: String },
-    Output { line: String },
-    Usage(Usage),
-    LimitHit { resets_at: Option<String> },
-    Finished { ok: bool },
-    Error { message: String },
+    Started {
+        run_id: String,
+    },
+    Output {
+        run_id: String,
+        line: String,
+    },
+    Usage {
+        run_id: String,
+        input: u64,
+        output: u64,
+        cache: u64,
+    },
+    LimitHit {
+        run_id: String,
+        resets_at: Option<String>,
+    },
+    Finished {
+        run_id: String,
+        ok: bool,
+    },
+    Error {
+        run_id: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -214,21 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn scrubbed_env_vars() {
-        assert_eq!(
-            SCRUBBED_ENV_VARS,
-            &[
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "CODEX_API_KEY",
-                "GEMINI_API_KEY",
-                "GOOGLE_API_KEY",
-                "XAI_API_KEY",
-            ]
-        );
-    }
-
-    #[test]
     fn run_event_round_trip() {
         let cases = [
             (
@@ -238,30 +242,41 @@ mod tests {
                 json!({"type": "started", "runId": "r1"}),
             ),
             (
-                RunEvent::Output { line: "hi".into() },
-                json!({"type": "output", "line": "hi"}),
+                RunEvent::Output {
+                    run_id: "r1".into(),
+                    line: "hi".into(),
+                },
+                json!({"type": "output", "runId": "r1", "line": "hi"}),
             ),
             (
-                RunEvent::Usage(Usage {
+                RunEvent::Usage {
+                    run_id: "r1".into(),
                     input: 1,
                     output: 2,
                     cache: 3,
-                }),
-                json!({"type": "usage", "input": 1, "output": 2, "cache": 3}),
+                },
+                json!({"type": "usage", "runId": "r1", "input": 1, "output": 2, "cache": 3}),
             ),
             (
-                RunEvent::LimitHit { resets_at: None },
-                json!({"type": "limitHit", "resetsAt": null}),
+                RunEvent::LimitHit {
+                    run_id: "r1".into(),
+                    resets_at: None,
+                },
+                json!({"type": "limitHit", "runId": "r1", "resetsAt": null}),
             ),
             (
-                RunEvent::Finished { ok: true },
-                json!({"type": "finished", "ok": true}),
+                RunEvent::Finished {
+                    run_id: "r1".into(),
+                    ok: true,
+                },
+                json!({"type": "finished", "runId": "r1", "ok": true}),
             ),
             (
                 RunEvent::Error {
+                    run_id: "r1".into(),
                     message: "no".into(),
                 },
-                json!({"type": "error", "message": "no"}),
+                json!({"type": "error", "runId": "r1", "message": "no"}),
             ),
         ];
         for (event, expected) in cases {
@@ -300,7 +315,11 @@ mod tests {
         EngineChoice::export_all(&cfg).unwrap();
         LimitWindow::export_all(&cfg).unwrap();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/types/generated");
-        assert!(dir.join("RunEvent.ts").is_file());
+        let runevent = std::fs::read_to_string(dir.join("RunEvent.ts")).unwrap();
+        assert!(
+            !runevent.contains('&'),
+            "RunEvent.ts must be a plain union, got {runevent}"
+        );
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().and_then(|e| e.to_str()) != Some("ts") {

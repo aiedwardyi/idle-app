@@ -14,4 +14,5 @@ Conventions: conventional commits, tests for every parser and state change, PRs 
 Run tests: cargo test (src-tauri), npm test (src).
 
 ## Layout
+
 docs/, src/types/, src-tauri/src/contract/, src-tauri/src/engines/, src-tauri/src/store/.

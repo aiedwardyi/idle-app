@@ -75,6 +75,15 @@ jobs:
       - name: Generated TypeScript is up to date
         run: git diff --exit-code --ignore-cr-at-eol -- src/types/generated
 
+      - name: No untracked generated TypeScript
+        shell: bash
+        run: |
+          status=$(git status --porcelain -- src/types/generated)
+          if [ -n "$status" ]; then
+            echo "$status"
+            exit 1
+          fi
+
       - name: Cargo build
         working-directory: src-tauri
         run: cargo build

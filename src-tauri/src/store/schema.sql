@@ -1,10 +1,11 @@
-CREATE TABLE schema_version (
+CREATE TABLE IF NOT EXISTS schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 );
 
-INSERT INTO schema_version (version) VALUES (1);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1);
 
-CREATE TABLE tasks (
+CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     prompt TEXT NOT NULL,
     folder TEXT NOT NULL,
@@ -15,9 +16,9 @@ CREATE TABLE tasks (
     updated_at TEXT NOT NULL
 );
 
-CREATE INDEX idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
 
-CREATE TABLE runs (
+CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks (id),
     engine TEXT NOT NULL,
@@ -30,9 +31,9 @@ CREATE TABLE runs (
     snapshot_id TEXT
 );
 
-CREATE INDEX idx_runs_task_id ON runs (task_id);
+CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs (task_id);
 
-CREATE TABLE meter_state (
+CREATE TABLE IF NOT EXISTS meter_state (
     engine TEXT NOT NULL,
     window TEXT NOT NULL,
     used_input INTEGER NOT NULL,
@@ -46,7 +47,7 @@ CREATE TABLE meter_state (
 );
 
 -- Calibration ground truth. Never prune this table.
-CREATE TABLE limit_hits (
+CREATE TABLE IF NOT EXISTS limit_hits (
     engine TEXT NOT NULL,
     window TEXT NOT NULL,
     hit_at TEXT NOT NULL,
@@ -56,4 +57,4 @@ CREATE TABLE limit_hits (
     used_cache INTEGER NOT NULL
 );
 
-CREATE INDEX idx_limit_hits_engine_window ON limit_hits (engine, window);
+CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, window);

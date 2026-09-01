@@ -12,7 +12,7 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 | TaskStatus      | `"queued"` \| `"running"` \| `"done"` \| `"failed"` \| `"discarded"`           |
 | Task            | `{ id, prompt, folder, size, engine, status, createdAt, updatedAt }`           |
 | Usage           | `{ input, output, cache }` (u64, JSON numbers)                                 |
-| RunEvent        | tagged, see lifecycle                                                          |
+| RunEvent        | tagged on `type`, every variant includes `runId`, see lifecycle                |
 | ExitReason      | `"ok"` \| `"failed"` \| `"limitHit"` \| `"cancelled"` \| `"timeout"`           |
 | Run             | `{ id, taskId, engine, startedAt, finishedAt, exitReason, usage, snapshotId }` |
 | LimitWindowKind | `"fiveHour"` \| `"daily"` \| `"weekly"`                                        |
@@ -25,16 +25,16 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 ## RunEvent lifecycle
 
-Internally tagged on `type`. A run emits `started`, then zero or more `output` and `usage` events, then exactly one of `limitHit`, `finished`, or `error`.
+Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output` and `usage` events, then exactly one of `limitHit`, `finished`, or `error`.
 
-| `type`     | Fields                                         |
-| ---------- | ---------------------------------------------- |
-| `started`  | `runId`                                        |
-| `output`   | `line`                                         |
-| `usage`    | `input`, `output`, `cache` (flattened `Usage`) |
-| `limitHit` | `resetsAt`                                     |
-| `finished` | `ok`                                           |
-| `error`    | `message`                                      |
+| `type`     | Fields                              |
+| ---------- | ----------------------------------- |
+| `started`  | `runId`                             |
+| `output`   | `runId`, `line`                     |
+| `usage`    | `runId`, `input`, `output`, `cache` |
+| `limitHit` | `runId`, `resetsAt`                 |
+| `finished` | `runId`, `ok`                       |
+| `error`    | `runId`, `message`                  |
 
 ## IPC commands
 
@@ -68,7 +68,7 @@ Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
 
 `limit_hits` columns: `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. This table is calibration ground truth and is never pruned.
 
-`schema_version` starts at `1`.
+`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` starts at `1`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row.
 
 Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `used_cache`.
 
@@ -82,6 +82,10 @@ Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `use
 | Grok        | Weekly 168             |
 
 `default_windows(engine)` in Rust returns these. Hours are the window length.
+
+## Engine trait
+
+`detect`, `install`, and `login` are async (`async_trait`, so `dyn Engine` stays object-safe). `run` returns `BoxStream<RunEvent>`. `id` and `windows` stay sync.
 
 ## Hard rules
 
