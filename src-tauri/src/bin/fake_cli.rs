@@ -19,6 +19,7 @@ fn main() {
         "sleep" => sleep_forever(),
         "close-stdout-sleep" => close_stdout_then_sleep(),
         "hold-stdout" => hold_stdout_grandchild(),
+        "hold-stdout-exit" => hold_stdout_then_exit(),
         "hold-pipe" => hold_pipe(),
         "fail" => fail(),
         "env" => report_env(),
@@ -104,10 +105,22 @@ fn close_stdout() {
 /// Parent sleeps after spawning a grandchild that inherits stdout.
 /// Killing this process leaves the pipe open until the grandchild exits.
 fn hold_stdout_grandchild() {
+    spawn_stdout_holder();
+    say(r#"{"msg":"parent"}"#);
+    sleep_forever();
+}
+
+/// Parent exits 0 after spawning a grandchild that inherits stdout.
+/// The pipe stays open even though the direct child reported success.
+fn hold_stdout_then_exit() {
+    spawn_stdout_holder();
+    say(r#"{"msg":"parent"}"#);
+}
+
+fn spawn_stdout_holder() {
     let exe = std::env::current_exe().expect("current exe");
     // Test fixture only. This binary is the fake CLI, not idle-app.
-    // Do not wait: the parent must keep running so kill() leaves the
-    // grandchild holding stdout.
+    // Do not wait: the grandchild must outlive this process.
     #[allow(clippy::zombie_processes)]
     let _grandchild = std::process::Command::new(exe)
         .arg("hold-pipe")
@@ -116,8 +129,6 @@ fn hold_stdout_grandchild() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn grandchild");
-    say(r#"{"msg":"parent"}"#);
-    sleep_forever();
 }
 
 /// Grandchild: keep the inherited stdout write-end open. Exit when the

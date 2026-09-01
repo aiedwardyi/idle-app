@@ -118,8 +118,18 @@ impl Runner {
     }
 }
 
+/// Bound on stdout drain after the child has exited. Does not rewrite ExitReason.
+const DRAIN_BOUND: Duration = Duration::from_secs(5);
+/// Bound on the stderr join. Abort if the grandchild still holds the pipe.
+const STDERR_JOIN_BOUND: Duration = Duration::from_secs(1);
+
 /// Own the child from spawn to exit: pump stdout and stderr, apply the
 /// timeout, honor the kill switch, and report the final exit reason.
+///
+/// Invariant: every await in `drive` is bounded. Child exit is observed
+/// independently of stdout. After the child exits, stdout drain and the
+/// stderr join each have a deadline. The drain bound never rewrites
+/// ExitReason: a clean exit that drains slowly is still Ok.
 async fn drive(
     mut child: Child,
     run_id: String,
@@ -144,33 +154,46 @@ async fn drive(
     let stderr_run_id = run_id.clone();
     let mut stderr_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = stderr_tx.send(RunEvent::Error {
-                run_id: stderr_run_id.clone(),
-                message: format!("stderr: {}", line.trim_end_matches('\r')),
-            });
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let _ = stderr_tx.send(RunEvent::Error {
+                        run_id: stderr_run_id.clone(),
+                        message: format!("stderr: {}", line.trim_end_matches('\r')),
+                    });
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    let _ = stderr_tx.send(RunEvent::Error {
+                        run_id: stderr_run_id.clone(),
+                        message: format!("stderr read failed: {err}"),
+                    });
+                    break;
+                }
+            }
         }
     });
 
-    let deadline = tokio::time::Instant::now() + timeout;
+    let run_deadline = tokio::time::Instant::now() + timeout;
     let mut lines = BufReader::new(stdout).lines();
-    // Set when the child is stopped early; overrides the exit status.
     let mut early_exit: Option<ExitReason> = None;
     let mut kill_seen = false;
     let mut stdout_done = false;
+    let mut child_status: Option<std::io::Result<std::process::ExitStatus>> = None;
     let mut drain_deadline: Option<tokio::time::Instant> = None;
 
-    // Keep pumping stdout until EOF even after a kill, so buffered output
-    // is not lost. After stdout EOF, stay in this loop: only stop reading
-    // stdout, not the lifecycle. A child that closes stdout and then blocks
-    // must still be killable and must still hit the deadline.
-    // Lines::next_line is cancel safe, so a select loop does not drop
-    // partial reads.
-    let status = loop {
+    loop {
         tokio::select! {
             line = lines.next_line(), if !stdout_done => match line {
                 Ok(Some(line)) => emit_line(&tx, &run_id, &line),
-                Ok(None) | Err(_) => stdout_done = true,
+                Ok(None) => stdout_done = true,
+                Err(err) => {
+                    let _ = tx.send(RunEvent::Error {
+                        run_id: run_id.clone(),
+                        message: format!("stdout read failed: {err}"),
+                    });
+                    stdout_done = true;
+                }
             },
             _kill = &mut kill_rx, if !kill_seen && early_exit.is_none() => {
                 kill_seen = true;
@@ -179,40 +202,30 @@ async fn drive(
                 // treat either as cancellation and stop the child.
                 early_exit = Some(ExitReason::Cancelled);
                 stop_child(&mut child);
-                drain_deadline =
-                    Some(tokio::time::Instant::now() + Duration::from_secs(5));
             },
-            _ = tokio::time::sleep_until(deadline), if early_exit.is_none() => {
+            _ = tokio::time::sleep_until(run_deadline), if early_exit.is_none() && child_status.is_none() => {
                 early_exit = Some(ExitReason::Timeout);
                 stop_child(&mut child);
-                drain_deadline =
-                    Some(tokio::time::Instant::now() + Duration::from_secs(5));
             },
-            // Grandchild may inherit the stdout write-end and outlive a
-            // killed child. Bound that drain; keep early_exit as-is.
             _ = tokio::time::sleep_until(
-                drain_deadline.unwrap_or(deadline)
+                drain_deadline.unwrap_or(run_deadline)
             ), if drain_deadline.is_some() && !stdout_done => {
-                break child.wait().await;
+                // Drain bound elapsed. Stop reading; do not rewrite ExitReason.
+                stdout_done = true;
             },
-            // Do not observe exit until stdout has hit EOF. select picks
-            // randomly among ready branches, so a child that writes and
-            // exits quickly can otherwise drop unread buffered lines.
-            status = child.wait(), if stdout_done => break status,
+            status = child.wait(), if child_status.is_none() => {
+                child_status = Some(status);
+                drain_deadline = Some(tokio::time::Instant::now() + DRAIN_BOUND);
+            },
         }
-    };
-    if early_exit.is_some() {
-        // Same grandchild-pipe problem as stdout: do not wait forever.
-        if tokio::time::timeout(Duration::from_secs(1), &mut stderr_task)
-            .await
-            .is_err()
-        {
-            stderr_task.abort();
+        if child_status.is_some() && stdout_done {
+            break;
         }
-    } else {
-        let _ = stderr_task.await;
     }
 
+    join_bounded(&mut stderr_task, STDERR_JOIN_BOUND).await;
+
+    let status = child_status.expect("child wait completed");
     let reason = early_exit.unwrap_or(match &status {
         Ok(status) if status.success() => ExitReason::Ok,
         _ => ExitReason::Failed,
@@ -222,6 +235,12 @@ async fn drive(
         ok: reason == ExitReason::Ok,
     });
     let _ = done_tx.send(reason);
+}
+
+async fn join_bounded(task: &mut tokio::task::JoinHandle<()>, bound: Duration) {
+    if tokio::time::timeout(bound, &mut *task).await.is_err() {
+        task.abort();
+    }
 }
 
 /// Kill the child process.
