@@ -75,6 +75,9 @@ impl Drop for ScrubbedEnvGuard {
 }
 
 fn process_is_alive(pid: u32) -> bool {
+    // /proc is Linux-only. #[cfg(unix)] also matches macOS, where this
+    // path does not exist, so the probe silently returns false there.
+    // Fine for ubuntu-latest CI; no macOS path in this PR.
     #[cfg(unix)]
     {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
@@ -415,4 +418,38 @@ async fn burst_exit_drains_every_stdout_line() {
             "iteration {i}"
         );
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn kill_resolves_when_grandchild_holds_stdout() {
+    let mut handle = spawn_fake("hold-stdout", &ctx("r-hold", 60));
+    let mut events = handle.take_events();
+    assert_eq!(
+        events.next().await,
+        Some(RunEvent::Started {
+            run_id: "r-hold".to_string(),
+        })
+    );
+    let first = events.next().await;
+    assert!(
+        matches!(first, Some(RunEvent::Output { .. })),
+        "expected parent output, got {first:?}"
+    );
+    handle.kill();
+    let (rest, reason) = tokio::time::timeout(Duration::from_secs(8), async {
+        let rest: Vec<RunEvent> = events.collect().await;
+        let reason = handle.wait().await;
+        (rest, reason)
+    })
+    .await
+    .expect("run hung draining stdout after kill");
+    assert_eq!(reason, ExitReason::Cancelled);
+    assert_eq!(
+        rest.last(),
+        Some(&RunEvent::Finished {
+            run_id: "r-hold".to_string(),
+            ok: false,
+        })
+    );
 }

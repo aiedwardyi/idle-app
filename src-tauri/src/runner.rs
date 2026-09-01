@@ -142,7 +142,7 @@ async fn drive(
     // so adapters cannot distinguish them. Flag for PR-05; no new variant here.
     let stderr_tx = tx.clone();
     let stderr_run_id = run_id.clone();
-    let stderr_task = tokio::spawn(async move {
+    let mut stderr_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let _ = stderr_tx.send(RunEvent::Error {
@@ -158,6 +158,7 @@ async fn drive(
     let mut early_exit: Option<ExitReason> = None;
     let mut kill_seen = false;
     let mut stdout_done = false;
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     // Keep pumping stdout until EOF even after a kill, so buffered output
     // is not lost. After stdout EOF, stay in this loop: only stop reading
@@ -178,10 +179,21 @@ async fn drive(
                 // treat either as cancellation and stop the child.
                 early_exit = Some(ExitReason::Cancelled);
                 stop_child(&mut child);
+                drain_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(5));
             },
             _ = tokio::time::sleep_until(deadline), if early_exit.is_none() => {
                 early_exit = Some(ExitReason::Timeout);
                 stop_child(&mut child);
+                drain_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(5));
+            },
+            // Grandchild may inherit the stdout write-end and outlive a
+            // killed child. Bound that drain; keep early_exit as-is.
+            _ = tokio::time::sleep_until(
+                drain_deadline.unwrap_or(deadline)
+            ), if drain_deadline.is_some() && !stdout_done => {
+                break child.wait().await;
             },
             // Do not observe exit until stdout has hit EOF. select picks
             // randomly among ready branches, so a child that writes and
@@ -189,7 +201,17 @@ async fn drive(
             status = child.wait(), if stdout_done => break status,
         }
     };
-    let _ = stderr_task.await;
+    if early_exit.is_some() {
+        // Same grandchild-pipe problem as stdout: do not wait forever.
+        if tokio::time::timeout(Duration::from_secs(1), &mut stderr_task)
+            .await
+            .is_err()
+        {
+            stderr_task.abort();
+        }
+    } else {
+        let _ = stderr_task.await;
+    }
 
     let reason = early_exit.unwrap_or(match &status {
         Ok(status) if status.success() => ExitReason::Ok,
@@ -220,6 +242,9 @@ fn stop_child(child: &mut Child) {
 /// skip means the meter drifts with no trace of why.
 fn emit_line(tx: &mpsc::UnboundedSender<RunEvent>, run_id: &str, raw: &str) {
     // Windows children end lines with \r\n; trim the \r before parsing.
+    // Parsed here for validation only. The raw line is what we emit, so each
+    // adapter parses again. A future high-volume adapter may want a parsed
+    // Value on the event. Do not change RunEvent here.
     let line = raw.trim_end_matches('\r');
     let event = match serde_json::from_str::<serde_json::Value>(line) {
         Ok(_) => RunEvent::Output {

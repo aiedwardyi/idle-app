@@ -3,10 +3,11 @@
 //! Built as a second bin target and invoked from tests via
 //! `env!("CARGO_BIN_EXE_fake_cli")`, so the tests pass on both
 //! ubuntu-latest and windows-latest without any shell scripts.
-//! Spawns no subprocesses itself.
+//! One mode spawns a grandchild to hold the stdout pipe; the rest do not.
 
 use idle_app_lib::contract::SCRUBBED_ENV_VARS;
 use std::io::Write;
+use std::process::Stdio;
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
@@ -17,6 +18,8 @@ fn main() {
         "partial" => partial(),
         "sleep" => sleep_forever(),
         "close-stdout-sleep" => close_stdout_then_sleep(),
+        "hold-stdout" => hold_stdout_grandchild(),
+        "hold-pipe" => hold_pipe(),
         "fail" => fail(),
         "env" => report_env(),
         "cwd" => report_cwd(),
@@ -95,6 +98,38 @@ fn close_stdout() {
         // Safety: take ownership of the current stdout handle so drop
         // closes the pipe to the parent.
         drop(unsafe { OwnedHandle::from_raw_handle(raw) });
+    }
+}
+
+/// Parent sleeps after spawning a grandchild that inherits stdout.
+/// Killing this process leaves the pipe open until the grandchild exits.
+fn hold_stdout_grandchild() {
+    let exe = std::env::current_exe().expect("current exe");
+    // Test fixture only. This binary is the fake CLI, not idle-app.
+    // Do not wait: the parent must keep running so kill() leaves the
+    // grandchild holding stdout.
+    #[allow(clippy::zombie_processes)]
+    let _grandchild = std::process::Command::new(exe)
+        .arg("hold-pipe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn grandchild");
+    say(r#"{"msg":"parent"}"#);
+    sleep_forever();
+}
+
+/// Grandchild: keep the inherited stdout write-end open. Exit when the
+/// read end is gone so tests do not leak processes.
+fn hold_pipe() {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let mut out = std::io::stdout();
+        if out.write_all(b"{\"hold\":true}\n").is_err() {
+            break;
+        }
+        let _ = out.flush();
     }
 }
 
