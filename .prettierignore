@@ -1,0 +1,9 @@
+dist
+node_modules
+src-tauri
+package-lock.json
+.github/PULL_REQUEST_TEMPLATE.md
+*.png
+*.ico
+*.icns
+*.svg
