@@ -20,6 +20,15 @@ ts-rs = "12"
 thiserror = "2"
 futures = "0.3"
 async-trait = "0.1"
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt",
+    "sync",
+    "time",
+] }
 
 [dev-dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
+serial_test = "3"

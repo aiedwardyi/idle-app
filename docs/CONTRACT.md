@@ -25,16 +25,16 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 ## RunEvent lifecycle
 
-Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output` and `usage` events, then exactly one of `limitHit`, `finished`, or `error`.
+Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output`, `usage`, `limitHit`, and `error` events, then exactly one `finished`. `error` is valid mid-stream; a malformed line emits `error` and the run continues.
 
-| `type`     | Fields                              |
-| ---------- | ----------------------------------- |
-| `started`  | `runId`                             |
-| `output`   | `runId`, `line`                     |
-| `usage`    | `runId`, `input`, `output`, `cache` |
-| `limitHit` | `runId`, `resetsAt`                 |
-| `finished` | `runId`, `ok`                       |
-| `error`    | `runId`, `message`                  |
+| `type`     | Fields                              | Terminal? |
+| ---------- | ----------------------------------- | --------- |
+| `started`  | `runId`                             | no        |
+| `output`   | `runId`, `line`                     | no        |
+| `usage`    | `runId`, `input`, `output`, `cache` | no        |
+| `limitHit` | `runId`, `resetsAt`                 | no        |
+| `finished` | `runId`, `ok`                       | yes       |
+| `error`    | `runId`, `message`                  | no        |
 
 ## IPC commands
 
