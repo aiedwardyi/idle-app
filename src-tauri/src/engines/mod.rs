@@ -1,0 +1,47 @@
+use crate::contract::{DetectInfo, EngineId, LimitWindow, RunEvent, Task};
+use async_trait::async_trait;
+use futures::stream::BoxStream;
+use std::path::PathBuf;
+use thiserror::Error;
+
+pub type Result<T> = std::result::Result<T, EngineError>;
+
+#[derive(Debug, Error)]
+pub enum EngineError {
+    #[error("detect failed: {0}")]
+    Detect(String),
+    #[error("install failed: {0}")]
+    Install(String),
+    #[error("login failed: {0}")]
+    Login(String),
+    #[error("run failed: {0}")]
+    Run(String),
+}
+
+pub struct RunCtx {
+    pub run_id: String,
+    // Task.folder stays String: it crosses the IPC wire and must stay serde/ts-rs friendly.
+    pub cwd: PathBuf,
+    pub timeout_secs: u64,
+}
+
+#[async_trait]
+pub trait Engine: Send + Sync {
+    /// Stable identifier. No I/O.
+    fn id(&self) -> EngineId;
+
+    /// Reads exit codes only, never files. Async so a CLI probe does not block the runtime.
+    async fn detect(&self) -> Result<DetectInfo>;
+
+    /// Runs the vendor installer unmodified. Async so install does not block the runtime.
+    async fn install(&self) -> Result<()>;
+
+    /// Runs the vendor login command unmodified. Async so login does not block the runtime.
+    async fn login(&self) -> Result<()>;
+
+    /// Goes through Runner::spawn (to come). Returns a stream of RunEvent values.
+    fn run(&self, task: &Task, ctx: RunCtx) -> Result<BoxStream<'static, RunEvent>>;
+
+    /// Default limit windows for this engine. No vendor query.
+    fn windows(&self) -> Vec<LimitWindow>;
+}

@@ -72,6 +72,18 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      - name: Generated TypeScript is up to date
+        run: git diff --exit-code --ignore-cr-at-eol -- src/types/generated
+
+      - name: No untracked generated TypeScript
+        shell: bash
+        run: |
+          untracked=$(git ls-files --others --exclude-standard -- src/types/generated)
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            exit 1
+          fi
+
       - name: Cargo build
         working-directory: src-tauri
         run: cargo build

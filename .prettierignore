@@ -1,8 +1,11 @@
 dist
 node_modules
 src-tauri
+src/types/generated
 package-lock.json
 .github/PULL_REQUEST_TEMPLATE.md
+.github/workflows/claude-review.yml
+CLAUDE.md
 *.png
 *.ico
 *.icns
