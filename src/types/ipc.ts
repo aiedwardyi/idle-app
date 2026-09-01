@@ -1,3 +1,4 @@
+// Command and event strings are duplicated from src-tauri/src/ipc.rs. Change both.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { EngineChoice } from "./generated/EngineChoice";

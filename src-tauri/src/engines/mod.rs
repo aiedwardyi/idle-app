@@ -1,6 +1,7 @@
 use crate::contract::{DetectInfo, EngineId, LimitWindow, RunEvent, Task};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, EngineError>;
@@ -19,7 +20,8 @@ pub enum EngineError {
 
 pub struct RunCtx {
     pub run_id: String,
-    pub cwd: String,
+    // Task.folder stays String: it crosses the IPC wire and must stay serde/ts-rs friendly.
+    pub cwd: PathBuf,
     pub timeout_secs: u64,
 }
 

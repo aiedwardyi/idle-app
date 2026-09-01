@@ -157,7 +157,7 @@ pub struct MeterState {
     pub used: Usage,
     pub capacity_est: Option<u64>,
     pub calibrated: bool,
-    pub remaining_pct: Option<f32>,
+    pub remaining_pct: Option<f64>,
     pub resets_at: Option<String>,
 }
 

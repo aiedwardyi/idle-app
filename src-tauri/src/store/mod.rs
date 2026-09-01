@@ -26,4 +26,17 @@ mod tests {
             .unwrap();
         assert_eq!(id, 1);
     }
+
+    #[test]
+    fn limit_hits_allows_duplicate_window_timestamps() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::SCHEMA).unwrap();
+        let sql = "INSERT INTO limit_hits (engine, window, hit_at, used_input, used_output, used_cache) VALUES ('claude', 'fiveHour', 't', 1, 1, 1)";
+        conn.execute(sql, []).unwrap();
+        conn.execute(sql, []).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM limit_hits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
 }

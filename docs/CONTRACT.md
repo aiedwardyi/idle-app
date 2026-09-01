@@ -4,22 +4,22 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 ## Types
 
-| Type            | Shape                                                                          |
-| --------------- | ------------------------------------------------------------------------------ |
-| EngineId        | `"claude"` \| `"codex"` \| `"antigravity"` \| `"grok"`                         |
-| TaskSize        | `"s"` \| `"m"` \| `"l"`                                                        |
-| EngineChoice    | `{ type: "auto" }` \| `{ type: "fixed", engine: EngineId }`                    |
-| TaskStatus      | `"queued"` \| `"running"` \| `"done"` \| `"failed"` \| `"discarded"`           |
-| Task            | `{ id, prompt, folder, size, engine, status, createdAt, updatedAt }`           |
-| Usage           | `{ input, output, cache }` (u64, JSON numbers)                                 |
-| RunEvent        | tagged on `type`, every variant includes `runId`, see lifecycle                |
-| ExitReason      | `"ok"` \| `"failed"` \| `"limitHit"` \| `"cancelled"` \| `"timeout"`           |
-| Run             | `{ id, taskId, engine, startedAt, finishedAt, exitReason, usage, snapshotId }` |
-| LimitWindowKind | `"fiveHour"` \| `"daily"` \| `"weekly"`                                        |
-| LimitWindow     | `{ kind, hours }`                                                              |
-| MeterState      | `{ engine, window, used, capacityEst, calibrated, remainingPct, resetsAt }`    |
-| DetectInfo      | `{ installed, version, signedIn }`                                             |
-| EngineStatus    | `{ engine, detect }`                                                           |
+| Type            | Shape                                                                             |
+| --------------- | --------------------------------------------------------------------------------- |
+| EngineId        | `"claude"` \| `"codex"` \| `"antigravity"` \| `"grok"`                            |
+| TaskSize        | `"s"` \| `"m"` \| `"l"`                                                           |
+| EngineChoice    | `{ type: "auto" }` \| `{ type: "fixed", engine: EngineId }`                       |
+| TaskStatus      | `"queued"` \| `"running"` \| `"done"` \| `"failed"` \| `"discarded"`              |
+| Task            | `{ id, prompt, folder, size, engine, status, createdAt, updatedAt }`              |
+| Usage           | `{ input, output, cache }` (u64, JSON numbers)                                    |
+| RunEvent        | tagged on `type`, every variant includes `runId`, see lifecycle                   |
+| ExitReason      | `"ok"` \| `"failed"` \| `"limitHit"` \| `"cancelled"` \| `"timeout"`              |
+| Run             | `{ id, taskId, engine, startedAt, finishedAt, exitReason, usage, snapshotId }`    |
+| LimitWindowKind | `"fiveHour"` \| `"daily"` \| `"weekly"`                                           |
+| LimitWindow     | `{ kind, hours }`                                                                 |
+| MeterState      | `{ engine, window, used, capacityEst, calibrated, remainingPct (f64), resetsAt }` |
+| DetectInfo      | `{ installed, version, signedIn }`                                                |
+| EngineStatus    | `{ engine, detect }`                                                              |
 
 `id` values are UUID strings. `folder` is an absolute path. Optional fields are `null` when absent.
 
@@ -38,7 +38,7 @@ Internally tagged on `type`. Every variant carries `runId` so the UI can route u
 
 ## IPC commands
 
-Invoke args are the object in Args. Return is the Rust/JSON value.
+Invoke args are the object in Args. Return is the Rust/JSON value. Command and event name strings live in `src-tauri/src/ipc.rs` and are duplicated in `src/types/ipc.ts`. Change both.
 
 | Command       | Args                                                | Returns          |
 | ------------- | --------------------------------------------------- | ---------------- |
@@ -66,7 +66,7 @@ SQLite tables: `tasks`, `runs`, `meter_state`, `limit_hits`, `schema_version`.
 
 Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
 
-`limit_hits` columns: `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. This table is calibration ground truth and is never pruned.
+`limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
 
 `schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` starts at `1`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row.
 
@@ -85,7 +85,7 @@ Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `use
 
 ## Engine trait
 
-`detect`, `install`, and `login` are async (`async_trait`, so `dyn Engine` stays object-safe). `run` returns `BoxStream<RunEvent>`. `id` and `windows` stay sync.
+`detect`, `install`, and `login` are async (`async_trait`, so `dyn Engine` stays object-safe). `run` returns `BoxStream<RunEvent>`. `id` and `windows` stay sync. `RunCtx.cwd` is `PathBuf`. `Task.folder` stays a String because it crosses the IPC wire.
 
 ## Hard rules
 

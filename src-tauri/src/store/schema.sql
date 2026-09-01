@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS meter_state (
 
 -- Calibration ground truth. Never prune this table.
 CREATE TABLE IF NOT EXISTS limit_hits (
+    id INTEGER PRIMARY KEY,
     engine TEXT NOT NULL,
     window TEXT NOT NULL,
     hit_at TEXT NOT NULL,
