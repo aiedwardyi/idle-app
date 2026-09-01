@@ -31,3 +31,4 @@ tokio = { version = "1", features = [
 
 [dev-dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
+serial_test = "3"

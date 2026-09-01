@@ -15,6 +15,7 @@ fn main() {
         "malformed" => malformed(),
         "partial" => partial(),
         "sleep" => sleep_forever(),
+        "close-stdout-sleep" => close_stdout_then_sleep(),
         "fail" => fail(),
         "env" => report_env(),
         "cwd" => report_cwd(),
@@ -58,6 +59,32 @@ fn partial() {
 fn sleep_forever() {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+}
+
+/// Close stdout so the parent sees EOF, then block. Used to prove the
+/// runner still honors timeout and kill after stdout ends.
+fn close_stdout_then_sleep() {
+    let _ = std::io::stdout().flush();
+    close_stdout();
+    sleep_forever();
+}
+
+fn close_stdout() {
+    #[cfg(unix)]
+    {
+        use std::os::fd::FromRawFd;
+        // Safety: fd 1 is stdout. Dropping the owned fd closes it so the
+        // parent's pipe sees EOF while this process keeps running.
+        drop(unsafe { std::fs::File::from_raw_fd(1) });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        let raw = std::io::stdout().as_raw_handle();
+        // Safety: take ownership of the current stdout handle so drop
+        // closes the pipe to the parent.
+        drop(unsafe { OwnedHandle::from_raw_handle(raw) });
     }
 }
 

@@ -28,7 +28,8 @@ pub struct Runner;
 pub struct RunHandle {
     events: Option<BoxStream<'static, RunEvent>>,
     kill_tx: Option<oneshot::Sender<()>>,
-    done_rx: oneshot::Receiver<ExitReason>,
+    done_rx: Option<oneshot::Receiver<ExitReason>>,
+    pid: Option<u32>,
 }
 
 impl RunHandle {
@@ -50,7 +51,14 @@ impl RunHandle {
     /// Final exit reason. Resolves after the child has exited and the event
     /// stream has ended. Call at most once.
     pub async fn wait(&mut self) -> ExitReason {
-        (&mut self.done_rx).await.unwrap_or(ExitReason::Failed)
+        let rx = self.done_rx.take().expect("wait already called");
+        rx.await
+            .expect("runner task dropped without sending exit reason")
+    }
+
+    /// OS pid of the child, used by tests to assert the process actually died.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 
@@ -79,7 +87,10 @@ impl Runner {
             cmd.env_remove(var);
         }
         let child = cmd.spawn()?;
+        let pid = child.id();
 
+        // Unbounded: current engines emit a thin JSON-lines stream, so there
+        // is no backpressure. Benchmark before attaching a high-volume adapter.
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (kill_tx, kill_rx) = oneshot::channel();
         let (done_tx, done_rx) = oneshot::channel();
@@ -101,7 +112,8 @@ impl Runner {
         Ok(RunHandle {
             events: Some(events),
             kill_tx: Some(kill_tx),
-            done_rx,
+            done_rx: Some(done_rx),
+            pid,
         })
     }
 }
@@ -143,33 +155,35 @@ async fn drive(
     // Set when the child is stopped early; overrides the exit status.
     let mut early_exit: Option<ExitReason> = None;
     let mut kill_seen = false;
+    let mut stdout_done = false;
 
     // Keep pumping stdout until EOF even after a kill, so buffered output
-    // is not lost. Lines::next_line is cancel safe, so a select loop does
-    // not drop partial reads.
-    loop {
+    // is not lost. After stdout EOF, stay in this loop: only stop reading
+    // stdout, not the lifecycle. A child that closes stdout and then blocks
+    // must still be killable and must still hit the deadline.
+    // Lines::next_line is cancel safe, so a select loop does not drop
+    // partial reads.
+    let status = loop {
         tokio::select! {
-            line = lines.next_line() => match line {
+            line = lines.next_line(), if !stdout_done => match line {
                 Ok(Some(line)) => emit_line(&tx, &run_id, &line),
-                Ok(None) | Err(_) => break,
+                Ok(None) | Err(_) => stdout_done = true,
             },
-            kill = &mut kill_rx, if !kill_seen && early_exit.is_none() => {
+            _kill = &mut kill_rx, if !kill_seen && early_exit.is_none() => {
                 kill_seen = true;
-                // Err means the handle was dropped without an explicit
-                // kill; kill_on_drop already covers that case.
-                if kill.is_ok() {
-                    early_exit = Some(ExitReason::Cancelled);
-                    stop_child(&mut child);
-                }
+                // Ok: explicit kill(). Err: RunHandle was dropped. drive owns
+                // the Child, so kill_on_drop cannot fire from the handle;
+                // treat either as cancellation and stop the child.
+                early_exit = Some(ExitReason::Cancelled);
+                stop_child(&mut child);
             },
             _ = tokio::time::sleep_until(deadline), if early_exit.is_none() => {
                 early_exit = Some(ExitReason::Timeout);
                 stop_child(&mut child);
             },
+            status = child.wait() => break status,
         }
-    }
-
-    let status = child.wait().await;
+    };
     let _ = stderr_task.await;
 
     let reason = early_exit.unwrap_or(match &status {
@@ -202,16 +216,15 @@ fn stop_child(child: &mut Child) {
 fn emit_line(tx: &mpsc::UnboundedSender<RunEvent>, run_id: &str, raw: &str) {
     // Windows children end lines with \r\n; trim the \r before parsing.
     let line = raw.trim_end_matches('\r');
-    let event = if serde_json::from_str::<serde_json::Value>(line).is_ok() {
-        RunEvent::Output {
+    let event = match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(_) => RunEvent::Output {
             run_id: run_id.to_string(),
             line: line.to_string(),
-        }
-    } else {
-        RunEvent::Error {
+        },
+        Err(err) => RunEvent::Error {
             run_id: run_id.to_string(),
-            message: line.to_string(),
-        }
+            message: format!("{line}: {err}"),
+        },
     };
     let _ = tx.send(event);
 }
