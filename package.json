@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "color:check": "node scripts/color/sev.mjs check"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

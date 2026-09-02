@@ -1,48 +1,7 @@
 @import "tailwindcss";
-
-/* ---------------------------------------------------------------------------
-   Widget tokens. Light values live on :root; the dark set is redefined under
-   prefers-color-scheme so the widget follows the system appearance. Status
-   colours are fixed in both modes — they mean a state, not a style.
-   --------------------------------------------------------------------------- */
-:root {
-  color-scheme: light dark;
-
-  --w-surface: rgba(255, 255, 255, 0.74);
-  --w-surface-2: rgba(255, 255, 255, 0.5);
-  --w-hair: rgba(255, 255, 255, 0.75);
-  --w-ring: rgba(26, 23, 37, 0.1);
-  --w-ink: #191626;
-  --w-ink-2: #514c66;
-  --w-ink-3: #6b6681;
-  --w-track: rgba(26, 23, 37, 0.11);
-  --w-shadow: 0 22px 60px -14px rgba(26, 23, 37, 0.42);
-  --w-radius: 22px;
-  --w-blur: blur(26px) saturate(175%);
-
-  --accent-l: #2a6ff0;
-  --accent-d: #5b9dff;
-  --accent: var(--accent-l);
-  --st-warn: #fab219;
-  --st-serious: #ec835a;
-  --st-crit: #d03b3b;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --w-surface: rgba(40, 35, 56, 0.74);
-    --w-surface-2: rgba(60, 53, 80, 0.5);
-    --w-hair: rgba(255, 255, 255, 0.18);
-    --w-ring: rgba(255, 255, 255, 0.1);
-    --w-ink: #f6f4fb;
-    --w-ink-2: #c0bad2;
-    --w-ink-3: #a7a2ba;
-    --w-track: rgba(255, 255, 255, 0.13);
-    --w-shadow: 0 26px 70px -16px rgba(0, 0, 0, 0.72);
-
-    --accent: var(--accent-d);
-  }
-}
+/* Colour tokens are generated — `npm run color:check` validates them, and
+   docs/COLOR.md records the rules and their sources. Do not hand-edit. */
+@import "./styles/tokens.css";
 
 html,
 body {
@@ -57,81 +16,6 @@ body {
     "Segoe UI",
     sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-/* ---------------------------------------------------------------------------
-   Appearance. Theme and accent are stamped on <html> by App.tsx and persisted
-   in localStorage. Each theme redefines only the surface tokens; the layout
-   below is written against roles, so nothing else changes.
-   --------------------------------------------------------------------------- */
-:root[data-accent="teal"] {
-  --accent-l: #0f766e;
-  --accent-d: #2dd4bf;
-}
-:root[data-accent="green"] {
-  --accent-l: #1a7f37;
-  --accent-d: #4ade80;
-}
-:root[data-accent="magenta"] {
-  --accent-l: #c026d3;
-  --accent-d: #e879f9;
-}
-
-/* Bento — opaque card, tighter radius, no blur. */
-:root[data-widget-theme="bento"] {
-  --w-surface: #fcfcfb;
-  --w-surface-2: rgba(26, 23, 37, 0.05);
-  --w-hair: rgba(26, 23, 37, 0.08);
-  --w-ring: rgba(26, 23, 37, 0.14);
-  --w-radius: 16px;
-  --w-blur: none;
-}
-@media (prefers-color-scheme: dark) {
-  :root[data-widget-theme="bento"] {
-    --w-surface: #1a1a19;
-    --w-surface-2: rgba(255, 255, 255, 0.06);
-    --w-hair: rgba(255, 255, 255, 0.1);
-  }
-}
-
-/* Minimal — barely there, hairline rules instead of tiles. */
-:root[data-widget-theme="minimal"] {
-  --w-surface: rgba(250, 250, 252, 0.86);
-  --w-surface-2: transparent;
-  --w-hair: rgba(255, 255, 255, 0.6);
-  --w-ring: rgba(26, 23, 37, 0.14);
-  --w-radius: 8px;
-  --w-blur: blur(10px);
-}
-@media (prefers-color-scheme: dark) {
-  :root[data-widget-theme="minimal"] {
-    --w-surface: rgba(22, 20, 30, 0.84);
-    --w-surface-2: transparent;
-    --w-hair: rgba(255, 255, 255, 0.12);
-    --w-ring: rgba(255, 255, 255, 0.14);
-  }
-}
-
-/* Console — the app drives CLIs, so one theme says so. */
-:root[data-widget-theme="console"] {
-  --w-surface: #0e1512;
-  --w-surface-2: rgba(74, 222, 128, 0.07);
-  --w-hair: rgba(74, 222, 128, 0.22);
-  --w-ring: rgba(74, 222, 128, 0.3);
-  --w-ink: #dff7e7;
-  --w-ink-2: #a8dcbe;
-  --w-ink-3: #78ad90;
-  --w-track: rgba(74, 222, 128, 0.15);
-  --w-radius: 8px;
-  --w-blur: none;
-}
-@media (prefers-color-scheme: dark) {
-  :root[data-widget-theme="console"] {
-    --w-surface: #0e1512;
-    --w-ink: #dff7e7;
-    --w-ink-2: #a8dcbe;
-    --w-ink-3: #78ad90;
-  }
 }
 
 @layer components {
@@ -306,6 +190,7 @@ body {
     overflow: hidden;
     border-radius: 999px;
     background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
   }
   .fill {
     position: absolute;
