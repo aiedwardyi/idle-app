@@ -581,6 +581,62 @@ body {
     white-space: nowrap;
   }
 
+  /* --- collapsible sections --------------------------------------------- */
+  .section {
+    border-radius: 12px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .section > summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 11px;
+    border-radius: 12px;
+    color: var(--w-ink);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    list-style: none;
+  }
+  .section > summary::-webkit-details-marker {
+    display: none;
+  }
+  .section > summary:hover {
+    color: var(--w-ink);
+  }
+  .section > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .chev {
+    flex: 0 0 auto;
+    color: var(--w-ink-3);
+    transition: transform 0.16s ease;
+  }
+  .section[open] > summary .chev {
+    transform: rotate(90deg);
+  }
+  .section-hint {
+    margin-left: auto;
+    font-size: 0.58rem;
+    font-weight: 400;
+    color: var(--w-ink-3);
+  }
+  .section[open] > summary .section-hint {
+    opacity: 0;
+  }
+  .section-body {
+    padding: 0 11px 6px;
+    border-top: 1px solid var(--w-ring);
+    margin-top: -1px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chev {
+      transition: none;
+    }
+  }
+
   /* three-way appearance switch */
   .modeseg {
     display: flex;

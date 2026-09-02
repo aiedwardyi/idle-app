@@ -103,9 +103,15 @@ describe("screen navigation", () => {
     render(<App />);
 
     await user.click(screen.getByLabelText("Settings"));
-    expect(screen.getByText("Always on top")).toBeInTheDocument();
-    expect(screen.getByText("Theme")).toBeInTheDocument();
-    expect(screen.getByText("Appearance")).toBeInTheDocument();
+
+    // sections start collapsed
+    expect(screen.getByText("Look & Feel")).toBeInTheDocument();
+    expect(screen.queryByText("Always on top")).not.toBeVisible();
+
+    await user.click(screen.getByText("Look & Feel"));
+    expect(screen.getByText("Always on top")).toBeVisible();
+    expect(screen.getByText("Theme")).toBeVisible();
+    expect(screen.getByText("Mode")).toBeVisible();
     expect(screen.getByText("Accent")).toBeInTheDocument();
   });
 });
@@ -172,6 +178,7 @@ describe("preferences", () => {
     render(<App />);
 
     await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByText("Look & Feel"));
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect(document.documentElement).toHaveAttribute(
@@ -188,6 +195,7 @@ describe("preferences", () => {
     render(<App />);
 
     await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByText("Look & Feel"));
     await user.click(screen.getByLabelText("Always on top"));
 
     expect(screen.getByLabelText("Always on top")).toHaveAttribute(
@@ -205,6 +213,7 @@ describe("preferences", () => {
     expect(document.documentElement).toHaveAttribute("data-mode", "light");
 
     await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByText("Look & Feel"));
     await user.click(screen.getByRole("button", { name: "Dark" }));
     expect(document.documentElement).toHaveAttribute("data-mode", "dark");
 
@@ -232,6 +241,7 @@ describe("preferences", () => {
     render(<App />);
 
     await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByText("Look & Feel"));
     await user.click(screen.getByLabelText("teal"));
 
     expect(document.documentElement).toHaveAttribute("data-accent", "teal");
