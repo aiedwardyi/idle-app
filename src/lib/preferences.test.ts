@@ -17,9 +17,15 @@ describe("loadPreferences", () => {
   });
 
   test("round-trips a saved appearance", () => {
-    savePreferences({ theme: "console", accent: "teal", alwaysOnTop: true });
+    savePreferences({
+      theme: "console",
+      mode: "dark",
+      accent: "teal",
+      alwaysOnTop: true,
+    });
     expect(loadPreferences()).toEqual({
       theme: "console",
+      mode: "dark",
       accent: "teal",
       alwaysOnTop: true,
     });
@@ -31,6 +37,14 @@ describe("loadPreferences", () => {
       JSON.stringify({ theme: "hologram", accent: "puce" }),
     );
     expect(loadPreferences()).toEqual(DEFAULT_PREFERENCES);
+  });
+
+  test("an unknown mode falls back to light", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ theme: "glass", mode: "sepia", accent: "blue" }),
+    );
+    expect(loadPreferences().mode).toBe("light");
   });
 
   test("survives malformed json", () => {
@@ -58,6 +72,7 @@ describe("loadPreferences", () => {
     );
     expect(loadPreferences()).toEqual({
       theme: "bento",
+      mode: DEFAULT_PREFERENCES.mode,
       accent: DEFAULT_PREFERENCES.accent,
       alwaysOnTop: DEFAULT_PREFERENCES.alwaysOnTop,
     });

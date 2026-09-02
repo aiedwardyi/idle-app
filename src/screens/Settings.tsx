@@ -1,9 +1,12 @@
 import {
   ACCENTS,
   ACCENT_SWATCH,
+  MODES,
+  MODE_LABEL,
   THEMES,
   THEME_LABEL,
   type Accent,
+  type Mode,
   type Preferences,
   type Theme,
 } from "../lib/preferences";
@@ -11,6 +14,7 @@ import {
 type Props = {
   preferences: Preferences;
   onTheme: (theme: Theme) => void;
+  onMode: (mode: Mode) => void;
   onAccent: (accent: Accent) => void;
   onToggleAlwaysOnTop: () => void;
 };
@@ -18,6 +22,7 @@ type Props = {
 export function Settings({
   preferences,
   onTheme,
+  onMode,
   onAccent,
   onToggleAlwaysOnTop,
 }: Props) {
@@ -35,6 +40,22 @@ export function Settings({
           aria-label="Always on top"
           onClick={onToggleAlwaysOnTop}
         />
+      </div>
+
+      <div className="setblock">
+        <span className="k">Appearance</span>
+        <div className="modeseg" role="group" aria-label="Appearance">
+          {MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={preferences.mode === mode}
+              onClick={() => onMode(mode)}
+            >
+              {MODE_LABEL[mode]}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="setrow">

@@ -105,13 +105,66 @@ describe("screen navigation", () => {
     await user.click(screen.getByLabelText("Settings"));
     expect(screen.getByText("Always on top")).toBeInTheDocument();
     expect(screen.getByText("Theme")).toBeInTheDocument();
+    expect(screen.getByText("Appearance")).toBeInTheDocument();
     expect(screen.getByText("Accent")).toBeInTheDocument();
+  });
+});
+
+describe("the composer", () => {
+  test("typing and sending adds the task to the queue", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText("Queue"));
+    expect(screen.getByText(/3 queued/i)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New task"), "Rotate the API keys");
+    await user.click(screen.getByLabelText("Add to queue"));
+
+    expect(screen.getByText("Rotate the API keys")).toBeInTheDocument();
+    expect(screen.getByText(/4 queued/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("New task")).toHaveValue("");
+  });
+
+  test("send is disabled until there is something to send", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByLabelText("Queue"));
+
+    expect(screen.getByLabelText("Add to queue")).toBeDisabled();
+    await user.type(screen.getByLabelText("New task"), "   ");
+    expect(screen.getByLabelText("Add to queue")).toBeDisabled();
+  });
+
+  test("Enter sends and Shift+Enter does not", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByLabelText("Queue"));
+
+    const input = screen.getByLabelText("New task");
+    await user.type(input, "First line{Shift>}{Enter}{/Shift}second line");
+    expect(screen.getByText(/3 queued/i)).toBeInTheDocument();
+
+    await user.type(input, "{Enter}");
+    expect(screen.getByText(/4 queued/i)).toBeInTheDocument();
+  });
+
+  test("the composer only appears on the queue screen", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.queryByLabelText("New task")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Queue"));
+    expect(screen.getByLabelText("New task")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Settings"));
+    expect(screen.queryByLabelText("New task")).not.toBeInTheDocument();
   });
 });
 
 describe("preferences", () => {
   afterEach(() => {
     window.localStorage.clear();
+    document.documentElement.removeAttribute("data-mode");
   });
 
   test("picking a theme stamps the root and remembers it", async () => {
@@ -144,6 +197,34 @@ describe("preferences", () => {
     expect(window.localStorage.getItem("idle.preferences")).toContain(
       '"alwaysOnTop":true',
     );
+  });
+
+  test("light is the default and dark is an explicit choice", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    expect(document.documentElement).toHaveAttribute("data-mode", "light");
+
+    await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByRole("button", { name: "Dark" }));
+    expect(document.documentElement).toHaveAttribute("data-mode", "dark");
+
+    // "system" stamps nothing so prefers-color-scheme decides
+    await user.click(screen.getByRole("button", { name: "System" }));
+    expect(document.documentElement).not.toHaveAttribute("data-mode");
+  });
+
+  test("priority persists per task", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText("Queue"));
+    const select = screen.getByLabelText(
+      "Priority for Add retry to the sync worker",
+    );
+    await user.selectOptions(select, "high");
+
+    expect(select).toHaveValue("high");
+    expect(window.localStorage.getItem("idle.priorities")).toContain("high");
   });
 
   test("picking an accent stamps the root", async () => {

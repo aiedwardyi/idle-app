@@ -109,7 +109,14 @@ body {
   .meters {
     display: flex;
     flex-direction: column;
-    gap: 11px;
+    gap: 8px;
+  }
+  /* One card per engine: four stacked rows with no boundary read as one block. */
+  .meter-row {
+    padding: 8px 10px 7px;
+    border-radius: 12px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
   }
 
   .mhead {
@@ -326,9 +333,10 @@ body {
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 8px 10px;
-    border-radius: 10px;
+    padding: 9px 10px;
+    border-radius: 12px;
     background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
   }
   .taskbody {
     display: flex;
@@ -337,31 +345,62 @@ body {
     flex-direction: column;
     gap: 3px;
   }
-  .enginepick {
+  .pick {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
     gap: 4px;
-    padding: 2px 4px 2px 5px;
-    border-radius: 7px;
+    padding: 3px 5px;
+    border-radius: 8px;
     background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
     cursor: pointer;
   }
-  .enginepick select {
+  .pick select {
     appearance: none;
     border: 0;
     background: transparent;
     color: var(--w-ink-2);
     cursor: pointer;
     font: inherit;
-    font-size: 0.6rem;
+    font-size: 0.62rem;
   }
-  .enginepick select:focus-visible {
+  .pick select:focus-visible {
     outline: none;
   }
-  .enginepick:focus-within {
+  .pick:focus-within {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  /* both pickers stack at the right edge, engine over priority, matched in
+     width so their left edges line up */
+  .picks {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    margin-left: auto;
+    gap: 4px;
+  }
+  .picks .pick {
+    min-width: 92px;
+  }
+  .picks .pick select {
+    width: 100%;
+  }
+  /* the lit-bar count is the priority; unlit bars stay as a track */
+  .pick.prio svg {
+    color: var(--w-ink-3);
+  }
+  .pick.prio[data-bars="2"] svg {
+    color: var(--w-ink-2);
+  }
+  .pick.prio[data-bars="3"] svg {
+    color: var(--w-ink);
+  }
+  .task[data-priority="high"] {
+    box-shadow:
+      inset 0 0 0 1px var(--w-ring),
+      inset 3px 0 0 0 var(--accent);
   }
   .task b {
     font-size: 0.75rem;
@@ -478,6 +517,100 @@ body {
       inset 0 0 0 2px var(--w-ink),
       inset 0 0 0 4px var(--w-surface);
   }
+  /* --- composer ---------------------------------------------------------- */
+  /* Pinned below the scrolling queue: the list grows, this stays put. */
+  .composer {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 6px;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--w-ring);
+  }
+  .composer-input {
+    width: 100%;
+    max-height: 88px;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font: inherit;
+    font-size: 0.76rem;
+    line-height: 1.4;
+    resize: none;
+  }
+  .composer-input::placeholder {
+    color: var(--w-ink-3);
+  }
+  .composer-input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .composer-send {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--w-surface);
+    cursor: pointer;
+    transition:
+      transform 0.14s,
+      opacity 0.14s;
+  }
+  .composer-send:hover:not(:disabled) {
+    transform: scale(1.07);
+  }
+  .composer-send:disabled {
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink-3);
+    cursor: not-allowed;
+  }
+  .composer-hint {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    font-size: 0.58rem;
+    color: var(--w-ink-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* three-way appearance switch */
+  .modeseg {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 9px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .modeseg button {
+    flex: 1 1 0;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.7rem;
+  }
+  .modeseg button:hover {
+    color: var(--w-ink);
+  }
+  .modeseg button[aria-pressed="true"] {
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font-weight: 600;
+  }
+
   .themegrid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { EngineChoice, EngineId, LimitWindowKind } from "./types";
+import type { EngineChoice, EngineId, LimitWindowKind, Task } from "./types";
 import { MOCK_METERS, MOCK_TASKS } from "./mocks";
 import { groupMeters, levelFor, usedPct } from "./lib/meters";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
@@ -7,12 +7,15 @@ import {
   loadPreferences,
   savePreferences,
   type Accent,
+  type Mode,
   type Theme,
 } from "./lib/preferences";
 import { applyAlwaysOnTop } from "./lib/window";
+import { loadPriorities, savePriorities, type Priority } from "./lib/priority";
 import { TitleStrip } from "./components/TitleStrip";
 import { Widget } from "./screens/Widget";
 import { Tasks } from "./screens/Tasks";
+import { Composer } from "./components/Composer";
 import { Settings } from "./screens/Settings";
 
 function App() {
@@ -27,6 +30,13 @@ function App() {
   // Engine picked per task. Local only: update_task has no handler yet, so
   // this is the UI half of a call the runner PR will make real.
   const [engineFor, setEngineFor] = useState<Record<string, EngineChoice>>({});
+  const [priorities, setPriorities] = useState(loadPriorities);
+  // Session-only: tasks are app data and belong in the store, not here.
+  const [addedTasks, setAddedTasks] = useState<Task[]>([]);
+
+  useEffect(() => {
+    savePriorities(priorities);
+  }, [priorities]);
   const [preferences, setPreferences] = useState(loadPreferences);
 
   // Theme and accent are stamped on the root element so the token blocks in
@@ -35,6 +45,9 @@ function App() {
     const root = document.documentElement;
     root.setAttribute("data-widget-theme", preferences.theme);
     root.setAttribute("data-accent", preferences.accent);
+    // "system" means stamp nothing and let prefers-color-scheme decide.
+    if (preferences.mode === "system") root.removeAttribute("data-mode");
+    else root.setAttribute("data-mode", preferences.mode);
     savePreferences(preferences);
   }, [preferences]);
 
@@ -59,10 +72,10 @@ function App() {
   // count and the queue screen read from the same list so they cannot disagree.
   const active = useMemo(
     () =>
-      MOCK_TASKS.filter(
+      [...MOCK_TASKS, ...addedTasks].filter(
         (task) => task.status === "queued" || task.status === "running",
       ),
-    [],
+    [addedTasks],
   );
   const queue = active.map((task) =>
     engineFor[task.id] ? { ...task, engine: engineFor[task.id] } : task,
@@ -81,6 +94,27 @@ function App() {
     screen === "widget"
       ? `${queued} queued · ${live === 0 ? "paused" : `${live} ${live === 1 ? "engine" : "engines"} working`}`
       : `${queued} queued`;
+
+  // Absolute path, per the contract. Inheriting the newest task's folder beats
+  // inventing one; the composer says which folder it will use.
+  const folder = active[active.length - 1]?.folder ?? MOCK_TASKS[0].folder;
+
+  const addTask = (prompt: string) => {
+    const now = new Date().toISOString();
+    setAddedTasks((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        prompt,
+        folder,
+        size: "m",
+        engine: { type: "auto" },
+        status: "queued",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+  };
 
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
@@ -111,8 +145,12 @@ function App() {
         {screen === "tasks" && (
           <Tasks
             tasks={queue}
+            priorities={priorities}
             onEngine={(id, engine) =>
               setEngineFor((current) => ({ ...current, [id]: engine }))
+            }
+            onPriority={(id, priority: Priority) =>
+              setPriorities((current) => ({ ...current, [id]: priority }))
             }
           />
         )}
@@ -121,6 +159,9 @@ function App() {
             preferences={preferences}
             onTheme={(theme: Theme) =>
               setPreferences((current) => ({ ...current, theme }))
+            }
+            onMode={(mode: Mode) =>
+              setPreferences((current) => ({ ...current, mode }))
             }
             onAccent={(accent: Accent) =>
               setPreferences((current) => ({ ...current, accent }))
@@ -134,6 +175,8 @@ function App() {
           />
         )}
       </div>
+
+      {screen === "tasks" && <Composer folder={folder} onSubmit={addTask} />}
     </main>
   );
 }

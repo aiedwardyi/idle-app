@@ -1,5 +1,13 @@
+export const MODES = ["light", "dark", "system"] as const;
+export type Mode = (typeof MODES)[number];
+export const MODE_LABEL: Record<Mode, string> = {
+  light: "Light",
+  dark: "Dark",
+  system: "System",
+};
+
 export const THEMES = ["glass", "bento", "minimal", "console"] as const;
-export const ACCENTS = ["blue", "teal", "green", "magenta"] as const;
+export const ACCENTS = ["blue", "indigo", "teal", "magenta"] as const;
 
 export type Theme = (typeof THEMES)[number];
 export type Accent = (typeof ACCENTS)[number];
@@ -13,22 +21,25 @@ export const THEME_LABEL: Record<Theme, string> = {
 
 /** Swatch colours for the picker. The rendered accent comes from CSS. */
 export const ACCENT_SWATCH: Record<Accent, string> = {
-  blue: "#5b9dff",
-  teal: "#2dd4bf",
-  green: "#4ade80",
-  magenta: "#e879f9",
+  blue: "#0f7cd2",
+  indigo: "#6d68d7",
+  teal: "#0a8b8b",
+  magenta: "#ad4fa7",
 };
 
 const KEY = "idle.preferences";
 
 export type Preferences = {
   theme: Theme;
+  /** Light by default: the system setting is opt-in, not assumed. */
+  mode: Mode;
   accent: Accent;
   alwaysOnTop: boolean;
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "glass",
+  mode: "light",
   accent: "blue",
   alwaysOnTop: false,
 };
@@ -39,6 +50,10 @@ function isTheme(value: unknown): value is Theme {
 
 function isAccent(value: unknown): value is Accent {
   return ACCENTS.includes(value as Accent);
+}
+
+function isMode(value: unknown): value is Mode {
+  return MODES.includes(value as Mode);
 }
 
 /**
@@ -54,9 +69,13 @@ export function loadPreferences(): Preferences {
     if (typeof parsed !== "object" || parsed === null) {
       return DEFAULT_PREFERENCES;
     }
-    const { theme, accent, alwaysOnTop } = parsed as Record<string, unknown>;
+    const { theme, mode, accent, alwaysOnTop } = parsed as Record<
+      string,
+      unknown
+    >;
     return {
       theme: isTheme(theme) ? theme : DEFAULT_PREFERENCES.theme,
+      mode: isMode(mode) ? mode : DEFAULT_PREFERENCES.mode,
       accent: isAccent(accent) ? accent : DEFAULT_PREFERENCES.accent,
       alwaysOnTop:
         typeof alwaysOnTop === "boolean"
