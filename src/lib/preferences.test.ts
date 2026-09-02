@@ -22,12 +22,14 @@ describe("loadPreferences", () => {
       mode: "dark",
       accent: "teal",
       alwaysOnTop: true,
+      sort: "priority",
     });
     expect(loadPreferences()).toEqual({
       theme: "console",
       mode: "dark",
       accent: "teal",
       alwaysOnTop: true,
+      sort: "priority",
     });
   });
 
@@ -75,6 +77,7 @@ describe("loadPreferences", () => {
       mode: DEFAULT_PREFERENCES.mode,
       accent: DEFAULT_PREFERENCES.accent,
       alwaysOnTop: DEFAULT_PREFERENCES.alwaysOnTop,
+      sort: DEFAULT_PREFERENCES.sort,
     });
   });
 });

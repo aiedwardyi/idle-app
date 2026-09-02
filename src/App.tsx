@@ -10,6 +10,7 @@ import {
   type Mode,
   type Theme,
 } from "./lib/preferences";
+import type { Sort } from "./lib/sort";
 import { applyAlwaysOnTop } from "./lib/window";
 import { loadPriorities, savePriorities, type Priority } from "./lib/priority";
 import { TitleStrip } from "./components/TitleStrip";
@@ -146,11 +147,15 @@ function App() {
           <Tasks
             tasks={queue}
             priorities={priorities}
+            sort={preferences.sort}
             onEngine={(id, engine) =>
               setEngineFor((current) => ({ ...current, [id]: engine }))
             }
             onPriority={(id, priority: Priority) =>
               setPriorities((current) => ({ ...current, [id]: priority }))
+            }
+            onSort={(sort: Sort) =>
+              setPreferences((current) => ({ ...current, sort }))
             }
           />
         )}

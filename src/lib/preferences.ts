@@ -1,3 +1,5 @@
+import { SORTS, type Sort } from "./sort";
+
 export const MODES = ["light", "dark", "system"] as const;
 export type Mode = (typeof MODES)[number];
 export const MODE_LABEL: Record<Mode, string> = {
@@ -35,6 +37,8 @@ export type Preferences = {
   mode: Mode;
   accent: Accent;
   alwaysOnTop: boolean;
+  /** Queue sort order — a view preference, so it lives here. */
+  sort: Sort;
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -42,6 +46,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   mode: "light",
   accent: "blue",
   alwaysOnTop: false,
+  sort: "added",
 };
 
 function isTheme(value: unknown): value is Theme {
@@ -54,6 +59,10 @@ function isAccent(value: unknown): value is Accent {
 
 function isMode(value: unknown): value is Mode {
   return MODES.includes(value as Mode);
+}
+
+function isSort(value: unknown): value is Sort {
+  return SORTS.includes(value as Sort);
 }
 
 /**
@@ -69,7 +78,7 @@ export function loadPreferences(): Preferences {
     if (typeof parsed !== "object" || parsed === null) {
       return DEFAULT_PREFERENCES;
     }
-    const { theme, mode, accent, alwaysOnTop } = parsed as Record<
+    const { theme, mode, accent, alwaysOnTop, sort } = parsed as Record<
       string,
       unknown
     >;
@@ -81,6 +90,7 @@ export function loadPreferences(): Preferences {
         typeof alwaysOnTop === "boolean"
           ? alwaysOnTop
           : DEFAULT_PREFERENCES.alwaysOnTop,
+      sort: isSort(sort) ? sort : DEFAULT_PREFERENCES.sort,
     };
   } catch {
     return DEFAULT_PREFERENCES;

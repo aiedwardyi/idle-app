@@ -9,6 +9,7 @@ import {
   type Priority,
 } from "../lib/priority";
 import { Icon } from "../components/Icon";
+import { SORTS, SORT_LABEL, sortTasks, type Sort } from "../lib/sort";
 
 const CHOICES: { value: string; label: string; dot: string | null }[] = [
   { value: "auto", label: "Auto", dot: null },
@@ -32,18 +33,48 @@ function toChoice(value: string): EngineChoice {
 type Props = {
   tasks: Task[];
   priorities: Record<string, Priority>;
+  sort: Sort;
   onEngine: (id: string, engine: EngineChoice) => void;
   onPriority: (id: string, priority: Priority) => void;
+  onSort: (sort: Sort) => void;
 };
 
-export function Tasks({ tasks, priorities, onEngine, onPriority }: Props) {
+export function Tasks({
+  tasks,
+  priorities,
+  sort,
+  onEngine,
+  onPriority,
+  onSort,
+}: Props) {
+  const bar = (
+    <div className="sortbar" role="group" aria-label="Sort queue">
+      {SORTS.map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-pressed={sort === option}
+          onClick={() => onSort(option)}
+        >
+          {SORT_LABEL[option]}
+        </button>
+      ))}
+    </div>
+  );
+
   if (tasks.length === 0) {
-    return <p className="empty">Nothing queued.</p>;
+    return (
+      <div className="stack">
+        {bar}
+        <p className="empty">Nothing queued.</p>
+      </div>
+    );
   }
 
   return (
     <div className="stack">
-      {tasks.map((task) => {
+      {bar}
+      {sortTasks(tasks, sort, priorities).map((task) => {
         const value = choiceValue(task.engine);
         const dot = CHOICES.find((choice) => choice.value === value)?.dot;
         const priority = priorities[task.id] ?? DEFAULT_PRIORITY;

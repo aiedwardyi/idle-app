@@ -167,6 +167,44 @@ describe("the composer", () => {
   });
 });
 
+describe("queue sorting", () => {
+  test("sorting by priority reorders and persists the choice", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByLabelText("Queue"));
+
+    // default is the order tasks arrived in
+    expect(screen.getByRole("button", { name: "Added" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.selectOptions(
+      screen.getByLabelText("Priority for Draft the migration plan for v3"),
+      "high",
+    );
+    await user.click(screen.getByRole("button", { name: "Priority" }));
+
+    const first = document.querySelector(".task b")?.textContent;
+    expect(first).toBe("Draft the migration plan for v3");
+    expect(window.localStorage.getItem("idle.preferences")).toContain(
+      '"sort":"priority"',
+    );
+  });
+
+  test("sorting by engine groups fixed engines before auto", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByLabelText("Queue"));
+    await user.click(screen.getByRole("button", { name: "Engine" }));
+
+    // the Claude-pinned task leads; the auto ones fall to the end
+    expect(document.querySelector(".task b")?.textContent).toBe(
+      "Write tests for the CSV parser",
+    );
+  });
+});
+
 describe("preferences", () => {
   afterEach(() => {
     window.localStorage.clear();

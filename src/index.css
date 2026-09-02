@@ -517,6 +517,33 @@ body {
       inset 0 0 0 2px var(--w-ink),
       inset 0 0 0 4px var(--w-surface);
   }
+  /* --- sort bar ---------------------------------------------------------- */
+  /* Minimal by intent: three toggles, no chrome, no dropdown. */
+  .sortbar {
+    display: flex;
+    gap: 2px;
+    padding: 0 0 2px;
+  }
+  .sortbar button {
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--w-ink-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.63rem;
+  }
+  .sortbar button:hover {
+    color: var(--w-ink);
+  }
+  .sortbar button[aria-pressed="true"] {
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font-weight: 600;
+  }
+
   /* --- composer ---------------------------------------------------------- */
   /* Pinned below the scrolling queue: the list grows, this stays put. */
   .composer {
