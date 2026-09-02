@@ -17,8 +17,12 @@
   --w-ink-3: #6b6681;
   --w-track: rgba(26, 23, 37, 0.11);
   --w-shadow: 0 22px 60px -14px rgba(26, 23, 37, 0.42);
+  --w-radius: 22px;
+  --w-blur: blur(26px) saturate(175%);
 
-  --accent: #2a6ff0;
+  --accent-l: #2a6ff0;
+  --accent-d: #5b9dff;
+  --accent: var(--accent-l);
   --st-warn: #fab219;
   --st-serious: #ec835a;
   --st-crit: #d03b3b;
@@ -36,7 +40,7 @@
     --w-track: rgba(255, 255, 255, 0.13);
     --w-shadow: 0 26px 70px -16px rgba(0, 0, 0, 0.72);
 
-    --accent: #5b9dff;
+    --accent: var(--accent-d);
   }
 }
 
@@ -55,6 +59,81 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ---------------------------------------------------------------------------
+   Appearance. Theme and accent are stamped on <html> by App.tsx and persisted
+   in localStorage. Each theme redefines only the surface tokens; the layout
+   below is written against roles, so nothing else changes.
+   --------------------------------------------------------------------------- */
+:root[data-accent="teal"] {
+  --accent-l: #0f766e;
+  --accent-d: #2dd4bf;
+}
+:root[data-accent="green"] {
+  --accent-l: #1a7f37;
+  --accent-d: #4ade80;
+}
+:root[data-accent="magenta"] {
+  --accent-l: #c026d3;
+  --accent-d: #e879f9;
+}
+
+/* Bento — opaque card, tighter radius, no blur. */
+:root[data-widget-theme="bento"] {
+  --w-surface: #fcfcfb;
+  --w-surface-2: rgba(26, 23, 37, 0.05);
+  --w-hair: rgba(26, 23, 37, 0.08);
+  --w-ring: rgba(26, 23, 37, 0.14);
+  --w-radius: 16px;
+  --w-blur: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-widget-theme="bento"] {
+    --w-surface: #1a1a19;
+    --w-surface-2: rgba(255, 255, 255, 0.06);
+    --w-hair: rgba(255, 255, 255, 0.1);
+  }
+}
+
+/* Minimal — barely there, hairline rules instead of tiles. */
+:root[data-widget-theme="minimal"] {
+  --w-surface: rgba(250, 250, 252, 0.86);
+  --w-surface-2: transparent;
+  --w-hair: rgba(255, 255, 255, 0.6);
+  --w-ring: rgba(26, 23, 37, 0.14);
+  --w-radius: 8px;
+  --w-blur: blur(10px);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-widget-theme="minimal"] {
+    --w-surface: rgba(22, 20, 30, 0.84);
+    --w-surface-2: transparent;
+    --w-hair: rgba(255, 255, 255, 0.12);
+    --w-ring: rgba(255, 255, 255, 0.14);
+  }
+}
+
+/* Console — the app drives CLIs, so one theme says so. */
+:root[data-widget-theme="console"] {
+  --w-surface: #0e1512;
+  --w-surface-2: rgba(74, 222, 128, 0.07);
+  --w-hair: rgba(74, 222, 128, 0.22);
+  --w-ring: rgba(74, 222, 128, 0.3);
+  --w-ink: #dff7e7;
+  --w-ink-2: #a8dcbe;
+  --w-ink-3: #78ad90;
+  --w-track: rgba(74, 222, 128, 0.15);
+  --w-radius: 8px;
+  --w-blur: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-widget-theme="console"] {
+    --w-surface: #0e1512;
+    --w-ink: #dff7e7;
+    --w-ink-2: #a8dcbe;
+    --w-ink-3: #78ad90;
+  }
+}
+
 @layer components {
   /* --- shell ------------------------------------------------------------- */
   .widget {
@@ -63,14 +142,14 @@ body {
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
-    border-radius: 22px;
+    border-radius: var(--w-radius);
     color: var(--w-ink);
     background: var(--w-surface);
     box-shadow:
       var(--w-shadow),
       inset 0 1px 0 var(--w-hair),
       inset 0 0 0 1px var(--w-ring);
-    backdrop-filter: blur(26px) saturate(175%);
+    backdrop-filter: var(--w-blur);
   }
 
   .strip {
@@ -159,9 +238,26 @@ body {
     font-size: 0.78rem;
     font-weight: 600;
   }
-  .mpct {
+  /* the headline value */
+  .resets {
+    display: flex;
     margin-left: auto;
-    font-size: 0.71rem;
+    align-items: baseline;
+    gap: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .resets b {
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--w-ink);
+  }
+  .resets .rlabel {
+    font-size: 0.58rem;
+    color: var(--w-ink-3);
+  }
+  .mpct {
+    font-size: 0.63rem;
     font-variant-numeric: tabular-nums;
   }
 
@@ -287,9 +383,9 @@ body {
     flex-wrap: wrap;
     align-items: center;
     gap: 3px 6px;
-    margin-top: 4px;
-    font-size: 0.61rem;
-    color: var(--w-ink-3);
+    margin-top: 5px;
+    font-size: 0.63rem;
+    color: var(--w-ink-2);
   }
   /* The word stays in text ink and the icon carries the colour. Amber and
      orange on a light surface do not clear 3:1 as text, and a state that is
@@ -297,26 +393,35 @@ body {
   .state {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
-    font-weight: 500;
-    color: var(--w-ink-2);
+    gap: 4px;
+    padding: 2px 7px 2px 5px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--state-ink) 20%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--state-ink) 34%, transparent);
+    color: var(--w-ink);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    --state-ink: var(--accent);
   }
   .state svg {
-    color: var(--accent);
+    color: var(--state-ink);
+    flex: 0 0 auto;
   }
-  [data-level="tight"] .state svg {
-    color: var(--st-warn);
+  [data-level="tight"] .state {
+    --state-ink: var(--st-warn);
   }
-  [data-level="near"] .state svg {
-    color: var(--st-serious);
+  [data-level="near"] .state {
+    --state-ink: var(--st-serious);
   }
-  [data-level="hit"] .state svg {
-    color: var(--st-crit);
+  [data-level="hit"] .state {
+    --state-ink: var(--st-crit);
   }
-  [data-level="unknown"] .state svg {
-    color: var(--w-ink-3);
+  [data-level="unknown"] .state {
+    --state-ink: var(--w-ink-3);
   }
-  .resets {
+  .tokens {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
   }
@@ -334,11 +439,44 @@ body {
   }
   .task {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: flex-start;
+    gap: 8px;
     padding: 8px 10px;
     border-radius: 10px;
     background: var(--w-surface-2);
+  }
+  .taskbody {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .enginepick {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 5px;
+    border-radius: 7px;
+    background: var(--w-track);
+    cursor: pointer;
+  }
+  .enginepick select {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.6rem;
+  }
+  .enginepick select:focus-visible {
+    outline: none;
+  }
+  .enginepick:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
   .task b {
     font-size: 0.75rem;
@@ -421,6 +559,58 @@ body {
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+
+  /* console theme is monospace throughout */
+  :root[data-widget-theme="console"] .widget,
+  :root[data-widget-theme="console"] .widget * {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  /* --- appearance pickers ------------------------------------------------ */
+  .setblock {
+    padding: 8px 2px;
+  }
+  .setblock .k {
+    display: block;
+    margin-bottom: 7px;
+    font-size: 0.76rem;
+  }
+  .swatches {
+    display: flex;
+    gap: 5px;
+  }
+  .swatch {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: var(--sw);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    cursor: pointer;
+  }
+  .swatch[aria-pressed="true"] {
+    box-shadow:
+      inset 0 0 0 2px var(--w-ink),
+      inset 0 0 0 4px var(--w-surface);
+  }
+  .themegrid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 5px;
+  }
+  .tbtn {
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    font-size: 0.7rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tbtn[aria-pressed="true"] {
+    border-color: var(--accent);
+    color: var(--w-ink);
   }
 }
 

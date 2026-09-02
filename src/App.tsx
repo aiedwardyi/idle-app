@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import type { EngineId, LimitWindowKind } from "./types";
+import type { EngineChoice, EngineId, LimitWindowKind } from "./types";
 import { MOCK_METERS, MOCK_TASKS } from "./mocks";
 import { groupMeters, levelFor, usedPct } from "./lib/meters";
-import { SCREEN_TITLE, type Screen } from "./lib/screens";
+import { SCREEN_HEADING, type Screen } from "./lib/screens";
+import {
+  loadPreferences,
+  savePreferences,
+  type Accent,
+  type Theme,
+} from "./lib/preferences";
+import { applyAlwaysOnTop } from "./lib/window";
 import { TitleStrip } from "./components/TitleStrip";
 import { Widget } from "./screens/Widget";
 import { Tasks } from "./screens/Tasks";
@@ -16,7 +23,26 @@ function App() {
   const [running, setRunning] = useState<Partial<Record<EngineId, boolean>>>(
     {},
   );
-  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+
+  // Engine picked per task. Local only: update_task has no handler yet, so
+  // this is the UI half of a call the runner PR will make real.
+  const [engineFor, setEngineFor] = useState<Record<string, EngineChoice>>({});
+  const [preferences, setPreferences] = useState(loadPreferences);
+
+  // Theme and accent are stamped on the root element so the token blocks in
+  // index.css can key off them, and remembered across launches.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-widget-theme", preferences.theme);
+    root.setAttribute("data-accent", preferences.accent);
+    savePreferences(preferences);
+  }, [preferences]);
+
+  // Always on top is a real window call, applied on load as well as on change
+  // so the setting survives a restart.
+  useEffect(() => {
+    void applyAlwaysOnTop(preferences.alwaysOnTop);
+  }, [preferences.alwaysOnTop]);
 
   const groups = useMemo(() => groupMeters(MOCK_METERS), []);
 
@@ -38,6 +64,9 @@ function App() {
       ),
     [],
   );
+  const queue = active.map((task) =>
+    engineFor[task.id] ? { ...task, engine: engineFor[task.id] } : task,
+  );
   const queued = active.length;
 
   const live = groups.filter((group) => {
@@ -53,9 +82,6 @@ function App() {
       ? `${queued} queued · ${live === 0 ? "paused" : `${live} ${live === 1 ? "engine" : "engines"} working`}`
       : `${queued} queued`;
 
-  const openScreen = (next: Screen) =>
-    setScreen((current) => (current === next ? "widget" : next));
-
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
 
@@ -65,10 +91,10 @@ function App() {
   return (
     <main className="widget">
       <TitleStrip
-        title={SCREEN_TITLE[screen]}
+        title={SCREEN_HEADING[screen]}
         status={status}
         screen={screen}
-        onOpen={openScreen}
+        onOpen={setScreen}
       />
 
       <div className="body">
@@ -82,11 +108,29 @@ function App() {
             onToggleRun={toggleRun}
           />
         )}
-        {screen === "tasks" && <Tasks tasks={active} />}
+        {screen === "tasks" && (
+          <Tasks
+            tasks={queue}
+            onEngine={(id, engine) =>
+              setEngineFor((current) => ({ ...current, [id]: engine }))
+            }
+          />
+        )}
         {screen === "settings" && (
           <Settings
-            alwaysOnTop={alwaysOnTop}
-            onToggleAlwaysOnTop={() => setAlwaysOnTop((value) => !value)}
+            preferences={preferences}
+            onTheme={(theme: Theme) =>
+              setPreferences((current) => ({ ...current, theme }))
+            }
+            onAccent={(accent: Accent) =>
+              setPreferences((current) => ({ ...current, accent }))
+            }
+            onToggleAlwaysOnTop={() =>
+              setPreferences((current) => ({
+                ...current,
+                alwaysOnTop: !current.alwaysOnTop,
+              }))
+            }
           />
         )}
       </div>

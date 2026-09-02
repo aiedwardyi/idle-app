@@ -31,3 +31,14 @@ export const WINDOW_LABEL: Record<LimitWindowKind, string> = {
 export function windowRank(kind: LimitWindowKind): number {
   return WINDOW_RANK[kind];
 }
+
+/**
+ * A dot beside each engine name in the queue. Decorative only — the name is
+ * always rendered next to it, so identity never rests on colour.
+ */
+export const ENGINE_DOT: Record<EngineId, string> = {
+  claude: "#eb6834",
+  codex: "#1baf7a",
+  antigravity: "#2a78d6",
+  grok: "#7c5cff",
+};

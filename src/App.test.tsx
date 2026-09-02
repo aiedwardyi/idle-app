@@ -4,7 +4,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
 
 const row = (name: string) =>
-  screen.getByText(name).closest(".meter-row") as HTMLElement;
+  screen
+    .getByText(name, { selector: ".mname" })
+    .closest(".meter-row") as HTMLElement;
 
 describe("widget shell", () => {
   test("shows one row per engine", () => {
@@ -49,7 +51,7 @@ describe("the reset countdown", () => {
     const resets = () =>
       row("Claude").querySelector(".resets")?.textContent ?? "";
     const before = resets();
-    expect(before).toMatch(/resets in/);
+    expect(before).toMatch(/left/);
 
     await act(async () => {
       vi.advanceTimersByTime(60_000);
@@ -60,27 +62,98 @@ describe("the reset countdown", () => {
 });
 
 describe("screen navigation", () => {
-  test("the queue button opens the queue and toggles back", async () => {
+  test("three tabs, always visible, with the active one marked", () => {
+    render(<App />);
+    for (const name of ["Meters", "Queue", "Settings"]) {
+      expect(screen.getByLabelText(name)).toBeInTheDocument();
+    }
+    expect(screen.getByLabelText("Meters")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  test("the queue tab opens the queue and the meters tab returns", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByLabelText("Task queue"));
-    expect(screen.getByText("Queue")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("Queue"));
     expect(
       screen.getByText("Add retry to the sync worker"),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Claude", { selector: ".mname" }),
+    ).not.toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Task queue"));
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    // finished work is history, not queue
+    expect(
+      screen.queryByText("Fix flaky snapshot on Windows CI"),
+    ).not.toBeInTheDocument();
+
+    // there has to be a visible way back — the old build only toggled the
+    // same icon, which works but tells the user nothing
+    await user.click(screen.getByLabelText("Meters"));
+    expect(
+      screen.getByText("Claude", { selector: ".mname" }),
+    ).toBeInTheDocument();
   });
 
-  test("the settings button opens settings", async () => {
+  test("the settings tab opens settings", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByLabelText("Settings"));
     expect(screen.getByText("Always on top")).toBeInTheDocument();
+    expect(screen.getByText("Theme")).toBeInTheDocument();
+    expect(screen.getByText("Accent")).toBeInTheDocument();
+  });
+});
+
+describe("preferences", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  test("picking a theme stamps the root and remembers it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByRole("button", { name: "Console" }));
+
+    expect(document.documentElement).toHaveAttribute(
+      "data-widget-theme",
+      "console",
+    );
+    expect(window.localStorage.getItem("idle.preferences")).toContain(
+      "console",
+    );
+  });
+
+  test("always on top persists", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByLabelText("Always on top"));
+
+    expect(screen.getByLabelText("Always on top")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(window.localStorage.getItem("idle.preferences")).toContain(
+      '"alwaysOnTop":true',
+    );
+  });
+
+  test("picking an accent stamps the root", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByLabelText("teal"));
+
+    expect(document.documentElement).toHaveAttribute("data-accent", "teal");
   });
 });
 
@@ -109,11 +182,12 @@ describe("window switch", () => {
     render(<App />);
 
     const claude = row("Claude");
-    const before = within(claude).getByText(/%$/).textContent;
+    const pct = () => claude.querySelector(".mpct")?.textContent ?? "";
+    const before = pct();
 
     await user.click(within(claude).getByRole("button", { name: "7d" }));
 
-    expect(within(claude).getByText(/%$/).textContent).not.toBe(before);
+    expect(pct()).not.toBe(before);
     expect(within(claude).getByRole("button", { name: "7d" })).toHaveAttribute(
       "aria-pressed",
       "true",

@@ -39,7 +39,7 @@ describe("MeterRow", () => {
     );
 
     expect(screen.getByText("Claude")).toBeInTheDocument();
-    expect(screen.getByText("52%")).toBeInTheDocument();
+    expect(screen.getByText("52% used")).toBeInTheDocument();
     expect(screen.getByText(/2h 06m/)).toBeInTheDocument();
   });
 
@@ -81,7 +81,7 @@ describe("MeterRow", () => {
       />,
     );
 
-    expect(screen.getByText("~25%")).toBeInTheDocument();
+    expect(screen.getByText("~25% used")).toBeInTheDocument();
     // the "~" has to reach the capacity figure too, not just the percentage
     expect(container.textContent).toContain("~5.0M");
   });
@@ -98,7 +98,7 @@ describe("MeterRow", () => {
       />,
     );
 
-    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.getByText("—", { selector: ".mpct" })).toBeInTheDocument();
     expect(screen.getByText("no estimate")).toBeInTheDocument();
     expect(document.querySelector('[data-icon="unknown"]')).toBeInTheDocument();
     expect(document.querySelector('[data-icon="near"]')).toBeNull();

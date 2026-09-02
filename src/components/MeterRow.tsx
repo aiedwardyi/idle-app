@@ -49,12 +49,24 @@ export function MeterRow({
 
   return (
     <div className="meter-row" data-level={level}>
+      {/* Time to reset is the headline: it is the number you act on. The
+          percentage is context and sits in the footer. */}
       <div className="mhead">
         <span className="mname">{label}</span>
-        <span className="mpct">
-          {pct === null
-            ? "—"
-            : `${meter.calibrated ? "" : "~"}${Math.round(pct)}%`}
+        <span className="resets">
+          {resets === null ? (
+            <b>&mdash;</b>
+          ) : exhausted ? (
+            <>
+              <span className="rlabel">back in</span>
+              <b>{resets}</b>
+            </>
+          ) : (
+            <>
+              <b>{resets}</b>
+              <span className="rlabel">left</span>
+            </>
+          )}
         </span>
       </div>
 
@@ -113,21 +125,20 @@ export function MeterRow({
 
       <div className="mfoot">
         <span className="state">
-          <Icon name={LEVEL_ICON[level]} size={9} />
+          <Icon name={LEVEL_ICON[level]} size={11} strokeWidth={2.6} />
           {LEVEL_WORD[level]}
         </span>
-        <span>
+        <span className="mpct">
+          {pct === null
+            ? "—"
+            : `${meter.calibrated ? "" : "~"}${Math.round(pct)}% used`}
+        </span>
+        <span className="tokens">
           {formatTokens(totalUsage(meter.used))}
           {meter.capacityEst === null
             ? ""
             : ` / ${meter.calibrated ? "" : "~"}${formatTokens(meter.capacityEst)}`}
         </span>
-        {resets !== null && (
-          <span className="resets">
-            {exhausted ? "back in " : "resets in "}
-            {resets}
-          </span>
-        )}
       </div>
     </div>
   );

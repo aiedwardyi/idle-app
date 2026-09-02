@@ -1,5 +1,16 @@
 import { Icon } from "./Icon";
-import type { Screen } from "../lib/screens";
+import { SCREEN_TITLE, type Screen } from "../lib/screens";
+
+/**
+ * Three tabs, always visible, active one marked. The previous version toggled
+ * the same icon to go back, which works but tells the user nothing — there was
+ * no visible way back to the meters.
+ */
+const TABS: { screen: Screen; icon: "meters" | "queue" | "settings" }[] = [
+  { screen: "widget", icon: "meters" },
+  { screen: "tasks", icon: "queue" },
+  { screen: "settings", icon: "settings" },
+];
 
 type Props = {
   title: string;
@@ -16,24 +27,18 @@ export function TitleStrip({ title, status, screen, onOpen }: Props) {
         <span>{status}</span>
       </span>
       <span className="actions">
-        <button
-          type="button"
-          className="iconbtn"
-          aria-pressed={screen === "tasks"}
-          aria-label="Task queue"
-          onClick={() => onOpen("tasks")}
-        >
-          <Icon name="queue" />
-        </button>
-        <button
-          type="button"
-          className="iconbtn"
-          aria-pressed={screen === "settings"}
-          aria-label="Settings"
-          onClick={() => onOpen("settings")}
-        >
-          <Icon name="settings" />
-        </button>
+        {TABS.map((tab) => (
+          <button
+            key={tab.screen}
+            type="button"
+            className="iconbtn"
+            aria-pressed={screen === tab.screen}
+            aria-label={SCREEN_TITLE[tab.screen]}
+            onClick={() => onOpen(tab.screen)}
+          >
+            <Icon name={tab.icon} />
+          </button>
+        ))}
       </span>
     </div>
   );
