@@ -1,20 +1,37 @@
-//! Hermetic fake CLI for runner tests.
+//! Hermetic fake CLI for runner and adapter tests.
 //!
 //! Built as a second bin target and invoked from tests via
 //! `env!("CARGO_BIN_EXE_fake_cli")`, so the tests pass on both
 //! ubuntu-latest and windows-latest without any shell scripts.
 //! One mode spawns a grandchild to hold the stdout pipe; the rest do not.
+//!
+//! It also stands in for the `claude` binary: when the first argument is a
+//! claude flag or subcommand (`--version`, `auth`, `-p`), it answers the way
+//! the real CLI does, replaying fixture files on request. The adapter under
+//! test never knows the difference.
 
 use idle_app_lib::contract::SCRUBBED_ENV_VARS;
 use std::io::Write;
 use std::process::Stdio;
 
+/// Path of the `auth status` fixture to print. Exit code follows the
+/// `loggedIn` value in the file, like the real CLI.
+const AUTH_FIXTURE_ENV: &str = "IDLE_FAKE_CLI_AUTH_FIXTURE";
+
 fn main() {
-    let mode = std::env::args().nth(1).unwrap_or_default();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--version") => return claude_version(),
+        Some("auth") => return claude_auth_status(),
+        Some("-p") => return claude_print_run(&args),
+        _ => {}
+    }
+    let mode = args.first().cloned().unwrap_or_default();
     match mode.as_str() {
         "emit" => emit(),
         "burst" => burst(),
         "malformed" => malformed(),
+        "prefix-collision" => prefix_collision(),
         "partial" => partial(),
         "sleep" => sleep_forever(),
         "close-stdout-sleep" => close_stdout_then_sleep(),
@@ -33,6 +50,66 @@ fn main() {
 
 fn say(line: &str) {
     println!("{line}");
+}
+
+/// `claude --version` prints one plain text line, not JSON.
+fn claude_version() {
+    say("9.8.7 (Claude Code)");
+}
+
+/// `claude auth status` prints pretty JSON and exits 1 when signed out.
+fn claude_auth_status() {
+    let Some(path) = std::env::var_os(AUTH_FIXTURE_ENV) else {
+        eprintln!("{AUTH_FIXTURE_ENV} not set");
+        std::process::exit(2);
+    };
+    let text = std::fs::read_to_string(&path).expect("read auth fixture");
+    print!("{text}");
+    let _ = std::io::stdout().flush();
+    // Parse rather than string-match so a reformatted fixture cannot flip
+    // the exit code silently; a fixture without the field fails loudly.
+    let status: serde_json::Value = serde_json::from_str(&text).expect("auth fixture is JSON");
+    let logged_in = status["loggedIn"]
+        .as_bool()
+        .expect("auth fixture has a boolean loggedIn");
+    if !logged_in {
+        std::process::exit(1);
+    }
+}
+
+/// `claude -p ... -- <prompt>`. The prompt selects the behaviour so tests
+/// need no env vars and can run in parallel:
+///
+/// - `replay <exit_code> <path>` prints the fixture file line by line and
+///   exits with `exit_code`, standing in for a real stream-json run.
+/// - `hang` prints one init line and never exits, for kill tests.
+/// - anything else echoes the full argv as a `system` line so a test can
+///   prove the prompt survived the trip through the OS.
+fn claude_print_run(args: &[String]) {
+    let prompt = args
+        .iter()
+        .position(|arg| arg == "--")
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
+    if prompt == "hang" {
+        say(r#"{"type":"system","subtype":"init","session_id":"fake"}"#);
+        sleep_forever();
+    }
+    if let Some(rest) = prompt.strip_prefix("replay ") {
+        let (code, path) = rest.split_once(' ').expect("replay <exit_code> <path>");
+        let text = std::fs::read_to_string(path).expect("read replay fixture");
+        let mut out = std::io::stdout();
+        for line in text.lines() {
+            writeln!(out, "{line}").unwrap();
+        }
+        out.flush().unwrap();
+        std::process::exit(code.parse().expect("exit code"));
+    }
+    println!(
+        "{}",
+        serde_json::json!({ "type": "system", "subtype": "fake_argv", "args": args })
+    );
 }
 
 /// A valid JSON-lines stream, then exit 0.
@@ -56,6 +133,15 @@ fn malformed() {
     say(r#"{"msg":"before"}"#);
     say("this is not json");
     say(r#"{"msg":"after"}"#);
+}
+
+/// Two stdout lines shaped exactly like the Runner's own Error prefixes,
+/// plus one line that really is stderr. Drives the adapter's stdout
+/// recovery.
+fn prefix_collision() {
+    say("stderr: warning");
+    say("stderrCount: 5");
+    eprintln!("this line really is stderr");
 }
 
 /// One JSON object split across two flushed stdout chunks, then a whole
