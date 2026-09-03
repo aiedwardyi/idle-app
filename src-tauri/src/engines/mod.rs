@@ -99,6 +99,12 @@ impl EngineRun {
     /// Wrap a Runner handle with a mapper. The pump task owns the handle so
     /// the child lives exactly as long as this run does.
     pub fn from_handle(handle: RunHandle, run_id: String, mapper: impl EventMapper) -> Self {
+        // Unbounded, matching the Runner's channel one hop upstream: the
+        // mapping is about one event per line, so the backlog is the
+        // Runner's plus a handful. Bounding here would either drop events
+        // (invariant: nothing is dropped silently) or move the same backlog
+        // into the Runner. Revisit together with runner.rs if an adapter
+        // ever streams high volume.
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (kill_tx, kill_rx) = oneshot::channel();
         let (done_tx, done_rx) = oneshot::channel();
