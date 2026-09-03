@@ -85,7 +85,9 @@ Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `use
 
 ## Engine trait
 
-`detect`, `install`, and `login` are async (`async_trait`, so `dyn Engine` stays object-safe). `run` returns `BoxStream<RunEvent>`. `id` and `windows` stay sync. `RunCtx.cwd` is `PathBuf`. `Task.folder` stays a String because it crosses the IPC wire.
+`detect`, `install`, and `login` are async (`async_trait`, so `dyn Engine` stays object-safe). `run` returns `EngineRun`: the `RunEvent` stream plus `kill()` and `wait() -> ExitReason`, the same shape as the Runner's handle. A bare stream cannot report `limitHit`, `cancelled`, or `timeout`, and the meter needs `limitHit`. `id` and `windows` stay sync. `RunCtx.cwd` is `PathBuf`. `Task.folder` stays a String because it crosses the IPC wire.
+
+Adapters translate stdout through an `EventMapper`; the shared pump in `EngineRun` passes Runner `started` and `error` events through, feeds every JSON stdout line to the mapper, and closes with the mapper's final events plus one `finished`. A well-formed line the mapper does not recognise is an `error` carrying the raw line.
 
 ## Hard rules
 
