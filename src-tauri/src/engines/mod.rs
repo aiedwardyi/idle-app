@@ -115,7 +115,12 @@ impl EngineRun {
     }
 
     /// The event stream: `started`, then the adapter's events, then exactly
-    /// one `finished`. Callable once.
+    /// one `finished`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a second call. The stream is owned once, like the Runner's
+    /// `RunHandle::take_events`.
     pub fn take_events(&mut self) -> BoxStream<'static, RunEvent> {
         self.events.take().expect("events stream already taken")
     }
@@ -128,7 +133,12 @@ impl EngineRun {
     }
 
     /// Final exit reason. Resolves after the stream has ended, whether or
-    /// not anyone drained it. Call at most once.
+    /// not anyone drained it.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a second call: the reason is delivered once, like the
+    /// Runner's `RunHandle::wait`. Keep the value if you need it twice.
     pub async fn wait(&mut self) -> ExitReason {
         let rx = self.done_rx.take().expect("wait already called");
         rx.await.expect("pump dropped without sending exit reason")
