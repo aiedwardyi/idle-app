@@ -1,1 +1,725 @@
 @import "tailwindcss";
+/* Colour tokens are generated — `npm run color:check` validates them, and
+   docs/COLOR.md records the rules and their sources. Do not hand-edit. */
+@import "./styles/tokens.css";
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  box-sizing: border-box;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  /* --- shell ------------------------------------------------------------- */
+  .widget {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    border-radius: var(--w-radius);
+    color: var(--w-ink);
+    background: var(--w-surface);
+    box-shadow:
+      var(--w-shadow),
+      inset 0 1px 0 var(--w-hair),
+      inset 0 0 0 1px var(--w-ring);
+    backdrop-filter: var(--w-blur);
+  }
+
+  .strip {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px 8px;
+    user-select: none;
+  }
+
+  /* data-tauri-drag-region only fires for the element it sits on — a press on a
+     child is the child's event, so the title text used to swallow the drag and
+     only the strip's padding worked. Making the text transparent to the pointer
+     hands those presses back to the strip. The action buttons are siblings, not
+     children, so they keep their own hit testing. */
+  .brand {
+    pointer-events: none;
+  }
+
+  .brand {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+  .brand b {
+    font-size: 0.83rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .brand span {
+    overflow: hidden;
+    font-size: 0.58rem;
+    letter-spacing: 0.1em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--w-ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+  .iconbtn {
+    display: grid;
+    width: 27px;
+    height: 27px;
+    place-items: center;
+    border-radius: 8px;
+    color: var(--w-ink-2);
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+  .iconbtn:hover,
+  .iconbtn[aria-pressed="true"] {
+    background: var(--w-track);
+    color: var(--w-ink);
+  }
+
+  .body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 2px 12px 12px;
+  }
+
+  /* --- meter rows -------------------------------------------------------- */
+  .meters {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* One card per engine: four stacked rows with no boundary read as one block. */
+  .meter-row {
+    padding: 8px 10px 7px;
+    border-radius: 12px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+
+  .mhead {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    margin-bottom: 5px;
+  }
+  .mname {
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+  /* the headline value */
+  .resets {
+    display: flex;
+    margin-left: auto;
+    align-items: baseline;
+    gap: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .resets b {
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--w-ink);
+  }
+  .resets .rlabel {
+    font-size: 0.58rem;
+    color: var(--w-ink-3);
+  }
+  .mpct {
+    font-size: 0.63rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .rowplay {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--accent) 38%, transparent);
+    color: var(--accent);
+    cursor: pointer;
+    transition:
+      transform 0.14s,
+      background 0.16s;
+  }
+  .rowplay:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+    transform: scale(1.08);
+  }
+  .rowplay[data-running="true"] {
+    background: var(--accent);
+    box-shadow: none;
+    color: var(--w-surface);
+  }
+  .rowplay:disabled {
+    cursor: not-allowed;
+    opacity: 0.34;
+  }
+
+  .track {
+    position: relative;
+    display: block;
+    height: 8px;
+    min-width: 40px;
+    flex: 1 1 auto;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 999px;
+    background: var(--accent);
+    transition:
+      width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+      background 0.2s;
+  }
+  [data-level="tight"] .fill {
+    background: var(--st-warn);
+  }
+  [data-level="near"] .fill {
+    background: var(--st-serious);
+  }
+  [data-level="hit"] .fill {
+    background: var(--st-crit);
+  }
+  /* Uncalibrated: capacityEst is an estimate, so the fill is hatched rather
+     than reading as a measured value. */
+  .fill[data-calibrated="false"] {
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.42) 0 3px,
+      transparent 3px 6px
+    );
+  }
+
+  /* Fixed-width slot keeps every bar the same length. */
+  .winslot {
+    display: flex;
+    flex: 0 0 56px;
+    justify-content: flex-end;
+  }
+  .rowseg {
+    display: flex;
+    flex: 1 1 auto;
+    gap: 1px;
+    padding: 2px;
+    border-radius: 6px;
+    background: var(--w-track);
+  }
+  .rowseg button,
+  .rowwin-static {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 1px 3px;
+    border-radius: 4px;
+    font-size: 0.55rem;
+    line-height: 1.5;
+    text-align: center;
+    color: var(--w-ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .rowseg button {
+    cursor: pointer;
+  }
+  .rowseg button:hover {
+    color: var(--w-ink);
+  }
+  .rowseg button[aria-pressed="true"] {
+    background: color-mix(in oklab, var(--w-ink) 88%, transparent);
+    color: var(--w-surface);
+  }
+  .rowwin-static {
+    flex: 1 1 auto;
+    padding: 3px 4px;
+    border-radius: 6px;
+    box-shadow: inset 0 0 0 1px var(--w-track);
+  }
+
+  .mfoot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 6px;
+    margin-top: 5px;
+    font-size: 0.63rem;
+    color: var(--w-ink-2);
+  }
+  /* The word stays in text ink and the icon carries the colour. Amber and
+     orange on a light surface do not clear 3:1 as text, and a state that is
+     hard to read is worse than one with no colour at all. */
+  .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px 2px 5px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--state-ink) 20%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--state-ink) 34%, transparent);
+    color: var(--w-ink);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    --state-ink: var(--accent);
+  }
+  .state svg {
+    color: var(--state-ink);
+    flex: 0 0 auto;
+  }
+  [data-level="tight"] .state {
+    --state-ink: var(--st-warn);
+  }
+  [data-level="near"] .state {
+    --state-ink: var(--st-serious);
+  }
+  [data-level="hit"] .state {
+    --state-ink: var(--st-crit);
+  }
+  [data-level="unknown"] .state {
+    --state-ink: var(--w-ink-3);
+  }
+  .tokens {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* --- queue + settings -------------------------------------------------- */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .empty {
+    margin: 12px 2px;
+    font-size: 0.76rem;
+    color: var(--w-ink-3);
+  }
+  .task {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 12px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .taskbody {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .pick {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 5px;
+    border-radius: 8px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    cursor: pointer;
+  }
+  .pick select {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.62rem;
+  }
+  .pick select:focus-visible {
+    outline: none;
+  }
+  .pick:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  /* both pickers stack at the right edge, engine over priority, matched in
+     width so their left edges line up */
+  .picks {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    margin-left: auto;
+    gap: 4px;
+  }
+  .picks .pick {
+    min-width: 92px;
+  }
+  .picks .pick select {
+    width: 100%;
+  }
+  /* the lit-bar count is the priority; unlit bars stay as a track */
+  .pick.prio svg {
+    color: var(--w-ink-3);
+  }
+  .pick.prio[data-bars="2"] svg {
+    color: var(--w-ink-2);
+  }
+  .pick.prio[data-bars="3"] svg {
+    color: var(--w-ink);
+  }
+  .task[data-priority="high"] {
+    box-shadow:
+      inset 0 0 0 1px var(--w-ring),
+      inset 3px 0 0 0 var(--accent);
+  }
+  .task b {
+    font-size: 0.75rem;
+    font-weight: 500;
+  }
+  .task .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.58rem;
+    color: var(--w-ink-3);
+  }
+  .dot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--w-ink-3);
+  }
+  .dot[data-status="running"] {
+    background: var(--accent);
+  }
+  .dot[data-status="done"] {
+    background: #0ca30c;
+  }
+  .dot[data-status="failed"] {
+    background: var(--st-crit);
+  }
+
+  .setrow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--w-track);
+    font-size: 0.76rem;
+  }
+  .setrow:last-child {
+    border-bottom: 0;
+  }
+  .setrow .k {
+    flex: 1 1 auto;
+  }
+  .setrow .hint {
+    display: block;
+    margin-top: 1px;
+    font-size: 0.6rem;
+    color: var(--w-ink-3);
+  }
+  .toggle {
+    position: relative;
+    width: 36px;
+    height: 21px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--w-track);
+    cursor: pointer;
+    transition: background 0.18s;
+  }
+  .toggle::after {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--w-ink);
+    content: "";
+    transition: transform 0.18s;
+  }
+  .toggle[aria-pressed="true"] {
+    background: var(--accent);
+  }
+  .toggle[aria-pressed="true"]::after {
+    background: #fff;
+    transform: translateX(15px);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* console theme is monospace throughout */
+  :root[data-widget-theme="console"] .widget,
+  :root[data-widget-theme="console"] .widget * {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  /* --- appearance pickers ------------------------------------------------ */
+  .setblock {
+    padding: 8px 2px;
+  }
+  .setblock .k {
+    display: block;
+    margin-bottom: 7px;
+    font-size: 0.76rem;
+  }
+  .swatches {
+    display: flex;
+    gap: 5px;
+  }
+  .swatch {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: var(--sw);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    cursor: pointer;
+  }
+  .swatch[aria-pressed="true"] {
+    box-shadow:
+      inset 0 0 0 2px var(--w-ink),
+      inset 0 0 0 4px var(--w-surface);
+  }
+  /* --- sort bar ---------------------------------------------------------- */
+  /* Minimal by intent: three toggles, no chrome, no dropdown. */
+  .sortbar {
+    display: flex;
+    gap: 2px;
+    padding: 0 0 2px;
+  }
+  .sortbar button {
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--w-ink-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.63rem;
+  }
+  .sortbar button:hover {
+    color: var(--w-ink);
+  }
+  .sortbar button[aria-pressed="true"] {
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font-weight: 600;
+  }
+
+  /* --- composer ---------------------------------------------------------- */
+  /* Pinned below the scrolling queue: the list grows, this stays put. */
+  .composer {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 6px;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--w-ring);
+  }
+  .composer-input {
+    width: 100%;
+    max-height: 88px;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font: inherit;
+    font-size: 0.76rem;
+    line-height: 1.4;
+    resize: none;
+  }
+  .composer-input::placeholder {
+    color: var(--w-ink-3);
+  }
+  .composer-input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .composer-send {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--w-surface);
+    cursor: pointer;
+    transition:
+      transform 0.14s,
+      opacity 0.14s;
+  }
+  .composer-send:hover:not(:disabled) {
+    transform: scale(1.07);
+  }
+  .composer-send:disabled {
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink-3);
+    cursor: not-allowed;
+  }
+  .composer-hint {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    font-size: 0.58rem;
+    color: var(--w-ink-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* --- collapsible sections --------------------------------------------- */
+  .section {
+    border-radius: 12px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .section > summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 11px;
+    border-radius: 12px;
+    color: var(--w-ink);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    list-style: none;
+  }
+  .section > summary::-webkit-details-marker {
+    display: none;
+  }
+  .section > summary:hover {
+    color: var(--w-ink);
+  }
+  .section > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .chev {
+    flex: 0 0 auto;
+    color: var(--w-ink-3);
+    transition: transform 0.16s ease;
+  }
+  .section[open] > summary .chev {
+    transform: rotate(90deg);
+  }
+  .section-hint {
+    margin-left: auto;
+    font-size: 0.58rem;
+    font-weight: 400;
+    color: var(--w-ink-3);
+  }
+  .section[open] > summary .section-hint {
+    opacity: 0;
+  }
+  .section-body {
+    padding: 0 11px 6px;
+    border-top: 1px solid var(--w-ring);
+    margin-top: -1px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chev {
+      transition: none;
+    }
+  }
+
+  /* three-way appearance switch */
+  .modeseg {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 9px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .modeseg button {
+    flex: 1 1 0;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.7rem;
+  }
+  .modeseg button:hover {
+    color: var(--w-ink);
+  }
+  .modeseg button[aria-pressed="true"] {
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font-weight: 600;
+  }
+
+  .themegrid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 5px;
+  }
+  .tbtn {
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    font-size: 0.7rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tbtn[aria-pressed="true"] {
+    border-color: var(--accent);
+    color: var(--w-ink);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill,
+  .toggle,
+  .toggle::after,
+  .rowplay {
+    transition: none;
+  }
+}
