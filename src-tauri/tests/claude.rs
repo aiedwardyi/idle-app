@@ -12,8 +12,9 @@ use idle_app_lib::contract::{
     default_windows, DetectInfo, EngineChoice, EngineId, ExitReason, RunEvent, Task, TaskSize,
     TaskStatus,
 };
-use idle_app_lib::engines::claude::ClaudeEngine;
+use idle_app_lib::engines::claude::{raw_stdout_line, ClaudeEngine};
 use idle_app_lib::engines::{Engine, EngineError, EngineRun, RunCtx};
+use idle_app_lib::runner::Runner;
 use serial_test::serial;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -417,6 +418,30 @@ async fn detect_reports_signed_out_from_exit_code() {
             version: Some("9.8.7".into()),
             signed_in: false,
         }
+    );
+}
+
+/// Acceptance for the never-drop invariant: stdout lines that read exactly
+/// like the Runner's own Error prefixes still reach the adapter. The
+/// messages come from the real Runner, not from a hand-built event.
+#[tokio::test]
+async fn stdout_lines_shaped_like_runner_prefixes_survive_recovery() {
+    let mut handle =
+        Runner::spawn(FAKE_CLI, &["prefix-collision"], &ctx("r-prefix")).expect("spawn fake_cli");
+    let events: Vec<RunEvent> = handle.take_events().collect().await;
+    let recovered: Vec<String> = errors(&events)
+        .into_iter()
+        .filter_map(raw_stdout_line)
+        .collect();
+    for line in ["stderr: warning", "stderrCount: 5"] {
+        assert!(
+            recovered.iter().any(|got| got == line),
+            "stdout line `{line}` was dropped: {events:?}"
+        );
+    }
+    assert!(
+        !recovered.iter().any(|got| got.contains("really is stderr")),
+        "a stderr line came back as stdout: {recovered:?}"
     );
 }
 

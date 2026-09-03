@@ -238,23 +238,39 @@ fn parse_version(lines: &[String]) -> Option<String> {
 
 /// Recover a plain text stdout line from the Runner's `Error` message.
 ///
-/// Coupled to `runner::emit_line`, which formats a non-JSON stdout line as
-/// `"{line}: {err}"` and a stderr line as `"stderr: {line}"`; only the
-/// former is stdout. If that format changes, this returns `None`, `detect`
-/// reports `version: None`, and the integration test
-/// `detect_reports_version_and_signed_in_from_exit_code` fails, because its
-/// `9.8.7` travels through the real Runner. That test is the guard; a Runner
-/// raw-text mode would remove the need for it.
-fn raw_stdout_line(message: &str) -> Option<String> {
-    // Exact Runner prefixes only: a stdout line that merely begins with the
-    // word "stderr" is still stdout and must not be dropped.
-    if message.starts_with("stderr: ")
-        || message.starts_with("stderr read failed: ")
-        || message.starts_with("stdout read failed: ")
-    {
-        return None;
+/// The Runner flattens stderr lines and non-JSON stdout lines into one
+/// `Error` variant, so the channel is gone before the adapter sees it. No
+/// prefix test brings it back: any prefix that marks a stderr line also
+/// matches a stdout line starting with that same text, and drops it.
+///
+/// So this does not guess. `runner::emit_line` builds a stdout message as
+/// `"{line}: {err}"` with serde_json's own message for `line`; every split
+/// is re-encoded the same way and the one that reproduces the message
+/// exactly is the line. Every message `emit_line` can produce round-trips by
+/// construction, so no stdout line is dropped, and a message that
+/// round-trips nowhere did not come from stdout. Ambiguity resolves toward
+/// stdout: a stderr line ending in the serde error for its own prefix is
+/// kept rather than discarded.
+///
+/// Still coupled to that format. The guards are two integration tests that
+/// travel through the real Runner,
+/// `detect_reports_version_and_signed_in_from_exit_code` and
+/// `stdout_lines_shaped_like_runner_prefixes_survive_recovery`; `pub` for
+/// the second. A Runner event that names the source would retire this.
+pub fn raw_stdout_line(message: &str) -> Option<String> {
+    // Right to left: a serde message carries no ": ", so the true boundary
+    // is the last split that round-trips.
+    let mut end = message.len();
+    while let Some(at) = message[..end].rfind(": ") {
+        let (line, tail) = (&message[..at], &message[at + 2..]);
+        if let Err(err) = serde_json::from_str::<Value>(line) {
+            if tail == err.to_string() {
+                return Some(line.to_string());
+            }
+        }
+        end = at;
     }
-    message.rsplit_once(": ").map(|(line, _)| line.to_string())
+    None
 }
 
 /// Translates one Claude stream-json run. See the module docs for the
@@ -473,23 +489,29 @@ mod tests {
         assert_eq!(parse_version(&[]), None);
     }
 
+    /// Builds the message the way `runner::emit_line` does, so every case
+    /// below is one the Runner can actually produce.
+    fn stdout_error(line: &str) -> String {
+        let err = serde_json::from_str::<Value>(line).expect_err("line is not JSON");
+        format!("{line}: {err}")
+    }
+
     #[test]
-    fn raw_stdout_line_is_recovered_from_runner_error_only_for_stdout() {
-        assert_eq!(
-            raw_stdout_line("2.1.259 (Claude Code): expected value at line 1 column 1").as_deref(),
-            Some("2.1.259 (Claude Code)")
-        );
-        assert_eq!(
-            raw_stdout_line("  \"loggedIn\": true,: expected value at line 1 column 3").as_deref(),
-            Some("  \"loggedIn\": true,")
-        );
+    fn raw_stdout_line_keeps_every_stdout_line_and_no_runner_report() {
+        // The last two collide with the Runner's own prefixes and were the
+        // lines a prefix test dropped.
+        for line in [
+            "2.1.259 (Claude Code)",
+            "  \"loggedIn\": true,",
+            "stderrCount: 5",
+            "stderr: warning",
+            "stdout read failed: boom",
+        ] {
+            assert_eq!(raw_stdout_line(&stdout_error(line)).as_deref(), Some(line));
+        }
         assert_eq!(raw_stdout_line("stderr: warning"), None);
-        assert_eq!(raw_stdout_line("stdout read failed: boom"), None);
-        // A stdout line that merely starts with the word is still stdout.
-        assert_eq!(
-            raw_stdout_line("stderrCount: 5: expected value at line 1 column 1").as_deref(),
-            Some("stderrCount: 5")
-        );
+        assert_eq!(raw_stdout_line("stderr read failed: broken pipe"), None);
+        assert_eq!(raw_stdout_line("stdout read failed: broken pipe"), None);
     }
 
     #[test]

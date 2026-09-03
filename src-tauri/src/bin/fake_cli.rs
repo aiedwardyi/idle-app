@@ -31,6 +31,7 @@ fn main() {
         "emit" => emit(),
         "burst" => burst(),
         "malformed" => malformed(),
+        "prefix-collision" => prefix_collision(),
         "partial" => partial(),
         "sleep" => sleep_forever(),
         "close-stdout-sleep" => close_stdout_then_sleep(),
@@ -132,6 +133,15 @@ fn malformed() {
     say(r#"{"msg":"before"}"#);
     say("this is not json");
     say(r#"{"msg":"after"}"#);
+}
+
+/// Two stdout lines shaped exactly like the Runner's own Error prefixes,
+/// plus one line that really is stderr. Drives the adapter's stdout
+/// recovery.
+fn prefix_collision() {
+    say("stderr: warning");
+    say("stderrCount: 5");
+    eprintln!("this line really is stderr");
 }
 
 /// One JSON object split across two flushed stdout chunks, then a whole
