@@ -387,6 +387,9 @@ impl Drop for AuthFixture {
     }
 }
 
+/// Also the guard for `raw_stdout_line`: the version below is plain text,
+/// so it reaches the adapter as a Runner `Error` event and only comes back
+/// as `9.8.7` if the adapter still understands the Runner's format.
 #[tokio::test]
 #[serial]
 async fn detect_reports_version_and_signed_in_from_exit_code() {

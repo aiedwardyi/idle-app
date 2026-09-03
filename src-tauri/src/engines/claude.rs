@@ -236,9 +236,15 @@ fn parse_version(lines: &[String]) -> Option<String> {
         .then(|| first.to_string())
 }
 
-/// Recover a plain text stdout line from the Runner's `Error` message. The
-/// Runner formats a non-JSON stdout line as `"{line}: {err}"` and a stderr
-/// line as `"stderr: {line}"`; only the former is stdout.
+/// Recover a plain text stdout line from the Runner's `Error` message.
+///
+/// Coupled to `runner::emit_line`, which formats a non-JSON stdout line as
+/// `"{line}: {err}"` and a stderr line as `"stderr: {line}"`; only the
+/// former is stdout. If that format changes, this returns `None`, `detect`
+/// reports `version: None`, and the integration test
+/// `detect_reports_version_and_signed_in_from_exit_code` fails, because its
+/// `9.8.7` travels through the real Runner. That test is the guard; a Runner
+/// raw-text mode would remove the need for it.
 fn raw_stdout_line(message: &str) -> Option<String> {
     if message.starts_with("stderr") || message.starts_with("stdout read failed") {
         return None;
@@ -376,7 +382,8 @@ fn epoch_from_text(text: &str) -> Option<String> {
 }
 
 /// A JSON number of unix seconds (observed) or milliseconds (documented in
-/// one SDK) to RFC3339. Anything past year 5000 in seconds is really ms.
+/// one SDK) to RFC3339. 1e11 seconds is the year 5138, so anything larger
+/// is really milliseconds.
 fn epoch_to_rfc3339(value: &Value) -> Option<String> {
     let raw = value.as_f64()?;
     if raw <= 0.0 {
