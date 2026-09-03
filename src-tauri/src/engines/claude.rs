@@ -246,7 +246,12 @@ fn parse_version(lines: &[String]) -> Option<String> {
 /// `9.8.7` travels through the real Runner. That test is the guard; a Runner
 /// raw-text mode would remove the need for it.
 fn raw_stdout_line(message: &str) -> Option<String> {
-    if message.starts_with("stderr") || message.starts_with("stdout read failed") {
+    // Exact Runner prefixes only: a stdout line that merely begins with the
+    // word "stderr" is still stdout and must not be dropped.
+    if message.starts_with("stderr: ")
+        || message.starts_with("stderr read failed: ")
+        || message.starts_with("stdout read failed: ")
+    {
         return None;
     }
     message.rsplit_once(": ").map(|(line, _)| line.to_string())
@@ -363,6 +368,9 @@ fn u64_of(value: Option<&Value>) -> u64 {
 }
 
 /// Phrases the CLI has used for a subscription limit, past and present.
+/// This list is the last line of defence when neither `rate_limit_event`
+/// nor `assistant.error` flagged the hit. TODO: check it against the real
+/// capture that replaces `run_limit_hit.synthetic.jsonl`.
 fn is_limit_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -477,6 +485,11 @@ mod tests {
         );
         assert_eq!(raw_stdout_line("stderr: warning"), None);
         assert_eq!(raw_stdout_line("stdout read failed: boom"), None);
+        // A stdout line that merely starts with the word is still stdout.
+        assert_eq!(
+            raw_stdout_line("stderrCount: 5: expected value at line 1 column 1").as_deref(),
+            Some("stderrCount: 5")
+        );
     }
 
     #[test]
