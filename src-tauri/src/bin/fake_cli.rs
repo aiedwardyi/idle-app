@@ -65,7 +65,13 @@ fn claude_auth_status() {
     let text = std::fs::read_to_string(&path).expect("read auth fixture");
     print!("{text}");
     let _ = std::io::stdout().flush();
-    if text.contains("\"loggedIn\": false") {
+    // Parse rather than string-match so a reformatted fixture cannot flip
+    // the exit code silently; a fixture without the field fails loudly.
+    let status: serde_json::Value = serde_json::from_str(&text).expect("auth fixture is JSON");
+    let logged_in = status["loggedIn"]
+        .as_bool()
+        .expect("auth fixture has a boolean loggedIn");
+    if !logged_in {
         std::process::exit(1);
     }
 }
