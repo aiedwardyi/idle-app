@@ -299,41 +299,31 @@ impl Store {
         status: Option<TaskStatus>,
         updated_at: String,
     ) -> Result<Task, StoreError> {
-        let mut t = self
-            .get_task(id)
-            .await?
-            .ok_or_else(|| StoreError::NotFound("task".into()))?;
-        if let Some(p) = prompt {
-            t.prompt = p;
-        }
-        if let Some(f) = folder {
-            t.folder = f;
-        }
-        if let Some(s) = size {
-            t.size = s;
-        }
-        if let Some(e) = engine {
-            t.engine = e;
-        }
-        if let Some(st) = status {
-            t.status = st;
-        }
-        t.updated_at = updated_at;
-        let ret = t.clone();
+        let engine_str = engine
+            .map(|e| serde_json::to_string(&e))
+            .transpose()
+            .map_err(StoreError::Json)?;
         self.run(move |conn| {
-            conn.execute(
-                "UPDATE tasks SET prompt = ?1, folder = ?2, size = ?3, engine = ?4, status = ?5, updated_at = ?6 WHERE id = ?7",
+            let rows_affected = conn.execute(
+                "UPDATE tasks SET prompt = COALESCE(?1, prompt), folder = COALESCE(?2, folder), size = COALESCE(?3, size), engine = COALESCE(?4, engine), status = COALESCE(?5, status), updated_at = ?6 WHERE id = ?7",
                 params![
-                    t.prompt,
-                    t.folder,
-                    size_to_str(t.size),
-                    serde_json::to_string(&t.engine)?,
-                    status_to_str(t.status),
-                    t.updated_at,
-                    t.id,
+                    prompt,
+                    folder,
+                    size.map(size_to_str),
+                    engine_str,
+                    status.map(status_to_str),
+                    updated_at,
+                    id,
                 ],
             )?;
-            Ok(ret)
+            if rows_affected == 0 {
+                return Err(StoreError::NotFound(format!("task {id}")));
+            }
+            let mut stmt = conn.prepare(&format!("{SELECT_TASK} WHERE id = ?1"))?;
+            let mut rows = stmt.query_map(params![id], row_to_task)?;
+            rows.next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task {id}")))
         })
         .await
     }
@@ -427,6 +417,7 @@ impl Store {
         usage: Usage,
     ) -> Result<Vec<MeterState>, StoreError> {
         self.run(move |conn| {
+            // Usage counts concurrently against all active limit windows (e.g. 5-hour and weekly) for this engine.
             conn.execute(
                 "UPDATE meter_state SET used_input = used_input + ?1, used_output = used_output + ?2, used_cache = used_cache + ?3 WHERE engine = ?4",
                 params![
@@ -607,7 +598,7 @@ mod tests {
         store
             .finish_run(
                 "r1".into(),
-                "t1".into(),
+                "2026-09-04T01:00:00Z".into(),
                 ExitReason::Ok,
                 Usage {
                     input: 10,

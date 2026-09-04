@@ -12,6 +12,21 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+async fn wait_for_task_status(store: &Store, task_id: &str, expected: TaskStatus) -> Task {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(Some(task)) = store.get_task(task_id.to_string()).await {
+            if task.status == expected {
+                return task;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("timed out waiting for task {task_id} to reach status {expected:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn run_now_streams_events_and_records_run() {
     let store = Store::open_in_memory().unwrap();
@@ -50,9 +65,7 @@ async fn run_now_streams_events_and_records_run() {
     }
     assert!(!events.is_empty());
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let finished_task = store.get_task(task.id).await.unwrap().unwrap();
+    let finished_task = wait_for_task_status(&store, &task.id, TaskStatus::Done).await;
     assert_eq!(finished_task.status, TaskStatus::Done);
 
     let runs = store.list_runs(None).await.unwrap();
@@ -91,10 +104,8 @@ async fn stop_run_cancels_active_execution() {
 
     state.stop_run(&run.id).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let finished_task = store.get_task(task.id).await.unwrap().unwrap();
-    assert_eq!(finished_task.status, TaskStatus::Failed);
+    let finished_task = wait_for_task_status(&store, &task.id, TaskStatus::Discarded).await;
+    assert_eq!(finished_task.status, TaskStatus::Discarded);
 
     let runs = store.list_runs(None).await.unwrap();
     assert_eq!(runs.len(), 1);

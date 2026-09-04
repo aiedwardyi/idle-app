@@ -124,7 +124,7 @@ impl AppState {
         let ctx = RunCtx {
             run_id: run_id.clone(),
             cwd: PathBuf::from(&task.folder),
-            timeout_secs: 3600,
+            timeout_secs: task.size.timeout_secs(),
         };
 
         let mut engine_run = match engine.run(&task, ctx) {
@@ -231,10 +231,10 @@ impl AppState {
                 .finish_run(run_id_bg.clone(), finished_at.clone(), reason, latest_usage)
                 .await;
 
-            let final_status = if reason == crate::contract::ExitReason::Ok {
-                TaskStatus::Done
-            } else {
-                TaskStatus::Failed
+            let final_status = match reason {
+                crate::contract::ExitReason::Ok => TaskStatus::Done,
+                crate::contract::ExitReason::Cancelled => TaskStatus::Discarded,
+                _ => TaskStatus::Failed,
             };
             let _ = store
                 .update_task(
