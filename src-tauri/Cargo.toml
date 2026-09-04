@@ -28,7 +28,9 @@ tokio = { version = "1", features = [
     "sync",
     "time",
 ] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-rusqlite = { version = "0.37", features = ["bundled"] }
 serial_test = "3"
+

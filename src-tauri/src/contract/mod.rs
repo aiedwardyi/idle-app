@@ -29,6 +29,16 @@ pub enum TaskSize {
     L,
 }
 
+impl TaskSize {
+    pub const fn timeout_secs(self) -> u64 {
+        match self {
+            TaskSize::S => 600,
+            TaskSize::M => 1800,
+            TaskSize::L => 3600,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "type", content = "engine", rename_all = "camelCase")]
