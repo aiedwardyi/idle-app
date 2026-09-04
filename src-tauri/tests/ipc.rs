@@ -138,11 +138,14 @@ async fn run_now_rejects_already_running_task() {
 #[tokio::test]
 async fn run_now_concurrent_calls_reject_duplicate() {
     let store = Store::open_in_memory().unwrap();
-    let state = std::sync::Arc::new(AppState::new(store.clone()));
+    let mut state = AppState::new(store.clone());
+    state.claude_program = Some(FAKE_CLI.into());
+    let state = std::sync::Arc::new(state);
 
+    let prompt = format!("replay 0 {}", fixture("run_success.jsonl").display());
     let task = Task {
         id: "task-concurrent".into(),
-        prompt: "echo 1".into(),
+        prompt,
         folder: std::env::temp_dir().to_string_lossy().into_owned(),
         size: TaskSize::S,
         engine: EngineChoice::Auto,
