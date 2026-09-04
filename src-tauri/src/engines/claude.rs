@@ -423,7 +423,7 @@ fn epoch_to_rfc3339(value: &Value) -> Option<String> {
 
 /// Unix seconds to `YYYY-MM-DDTHH:MM:SSZ` without a date crate.
 /// Civil-from-days per Howard Hinnant's algorithm.
-fn rfc3339_from_unix(secs: u64) -> String {
+pub fn rfc3339_from_unix(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
