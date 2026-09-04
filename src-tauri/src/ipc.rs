@@ -59,10 +59,12 @@ impl AppState {
     }
 
     pub async fn stop_run(&self, run_id: &str) -> Result<(), String> {
-        if let Ok(mut lock) = self.active_runs.lock() {
-            if let Some(tx) = lock.remove(run_id) {
-                let _ = tx.send(());
-            }
+        let mut lock = self
+            .active_runs
+            .lock()
+            .map_err(|e| format!("active_runs lock poisoned: {e}"))?;
+        if let Some(tx) = lock.remove(run_id) {
+            let _ = tx.send(());
         }
         Ok(())
     }
@@ -71,55 +73,35 @@ impl AppState {
     where
         F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
     {
-        let task = self
-            .store
-            .get_task(task_id.clone())
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("task not found: {task_id}"))?;
-
-        if task.status == TaskStatus::Running {
-            return Err(format!("task {task_id} is already running"));
-        }
-
-        let engine_id = match task.engine {
-            EngineChoice::Fixed(id) => id,
-            EngineChoice::Auto => EngineId::Claude,
-        };
-        if engine_id != EngineId::Claude {
-            return Err(format!("engine {engine_id:?} is not supported yet"));
-        }
-
         let run_id = uuid::Uuid::new_v4().to_string();
         let started_at = now_rfc3339();
-        let run = Run {
-            id: run_id.clone(),
-            task_id: task.id.clone(),
-            engine: engine_id,
-            started_at: started_at.clone(),
-            finished_at: None,
-            exit_reason: None,
-            usage: Usage::default(),
-            snapshot_id: None,
-        };
 
-        self.store
-            .insert_run(run.clone())
+        let (task, run) = self
+            .store
+            .claim_task_and_insert_run(task_id.clone(), run_id.clone(), started_at.clone())
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| match e {
+                crate::store::StoreError::NotFound(_) => format!("task not found: {task_id}"),
+                crate::store::StoreError::Invalid(msg) => msg,
+                other => other.to_string(),
+            })?;
 
-        self.store
-            .update_task(
-                task.id.clone(),
-                None,
-                None,
-                None,
-                None,
-                Some(TaskStatus::Running),
-                started_at.clone(),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+        let engine_id = run.engine;
+        if engine_id != EngineId::Claude {
+            let _ = self
+                .store
+                .update_task(
+                    task.id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(TaskStatus::Failed),
+                    started_at,
+                )
+                .await;
+            return Err(format!("engine {engine_id:?} is not supported yet"));
+        }
 
         let engine = match &self.claude_program {
             Some(p) => ClaudeEngine::with_program(p),
@@ -210,34 +192,16 @@ impl AppState {
             let finished_at = now_rfc3339();
 
             if let Some(resets) = limit_hit_resets {
-                let meters = store.get_meters().await.unwrap_or_default();
-                let matching_windows: Vec<LimitWindowKind> = meters
-                    .iter()
-                    .filter(|m| m.engine == engine_id && m.resets_at.as_deref() == Some(&resets))
-                    .map(|m| m.window)
-                    .collect();
-
-                // LimitHit carries no window field; match resets_at against existing meters, or fan out to all windows to avoid guessing the wrong bucket.
-                let target_windows: Vec<LimitWindowKind> = if !matching_windows.is_empty() {
-                    matching_windows
-                } else {
-                    crate::contract::default_windows(engine_id)
-                        .into_iter()
-                        .map(|w| w.kind)
-                        .collect()
-                };
-
-                for w in target_windows {
-                    let _ = store
-                        .record_limit_hit(
-                            engine_id,
-                            w,
-                            finished_at.clone(),
-                            Some(resets.clone()),
-                            latest_usage,
-                        )
-                        .await;
-                }
+                // TODO: RunEvent::LimitHit needs a window field so hits can target the correct bucket; requires CONTRACT.md change in a follow-up PR.
+                let _ = store
+                    .record_limit_hit(
+                        engine_id,
+                        LimitWindowKind::FiveHour,
+                        finished_at.clone(),
+                        Some(resets),
+                        latest_usage,
+                    )
+                    .await;
 
                 if let Ok(meters) = store.get_meters().await {
                     for m in meters.into_iter().filter(|m| m.engine == engine_id) {

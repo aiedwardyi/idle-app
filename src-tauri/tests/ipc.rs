@@ -56,10 +56,12 @@ async fn run_now_streams_events_and_records_run() {
 
     assert_eq!(run.task_id, task.id);
 
+    // run_success.jsonl fixture emits 5 run events followed by 1 meter_update event.
+    const EXPECTED_FIXTURE_EVENTS: usize = 6;
     let mut events = Vec::new();
     while let Some(item) = rx.recv().await {
         events.push(item);
-        if events.len() >= 6 {
+        if events.len() >= EXPECTED_FIXTURE_EVENTS {
             break;
         }
     }
@@ -130,5 +132,41 @@ async fn run_now_rejects_already_running_task() {
     store.add_task(task.clone()).await.unwrap();
 
     let err = state.run_now(task.id, |_, _| {}).await.unwrap_err();
+    assert!(err.contains("already running"));
+}
+
+#[tokio::test]
+async fn run_now_concurrent_calls_reject_duplicate() {
+    let store = Store::open_in_memory().unwrap();
+    let state = std::sync::Arc::new(AppState::new(store.clone()));
+
+    let task = Task {
+        id: "task-concurrent".into(),
+        prompt: "echo 1".into(),
+        folder: std::env::temp_dir().to_string_lossy().into_owned(),
+        size: TaskSize::S,
+        engine: EngineChoice::Auto,
+        status: TaskStatus::Queued,
+        created_at: "2026-09-04T00:00:00Z".into(),
+        updated_at: "2026-09-04T00:00:00Z".into(),
+    };
+    store.add_task(task.clone()).await.unwrap();
+
+    let state1 = state.clone();
+    let id1 = task.id.clone();
+    let fut1 = tokio::spawn(async move { state1.run_now(id1, |_, _| {}).await });
+
+    let state2 = state.clone();
+    let id2 = task.id.clone();
+    let fut2 = tokio::spawn(async move { state2.run_now(id2, |_, _| {}).await });
+
+    let (res1, res2) = tokio::join!(fut1, fut2);
+    let r1 = res1.unwrap();
+    let r2 = res2.unwrap();
+
+    let (successes, failures): (Vec<_>, Vec<_>) = [r1, r2].into_iter().partition(Result::is_ok);
+    assert_eq!(successes.len(), 1);
+    assert_eq!(failures.len(), 1);
+    let err = failures[0].as_ref().unwrap_err();
     assert!(err.contains("already running"));
 }

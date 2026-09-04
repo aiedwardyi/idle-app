@@ -213,7 +213,9 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+        )?;
         conn.execute_batch(SCHEMA)?;
         for engine in [
             EngineId::Claude,
@@ -339,6 +341,70 @@ impl Store {
         .await
     }
 
+    pub async fn claim_task_and_insert_run(
+        &self,
+        task_id: String,
+        run_id: String,
+        started_at: String,
+    ) -> Result<(Task, Run), StoreError> {
+        self.run(move |conn| {
+            let tx = conn.transaction()?;
+            let mut stmt = tx.prepare(&format!("{SELECT_TASK} WHERE id = ?1"))?;
+            let mut rows = stmt.query_map(params![task_id], row_to_task)?;
+            let task = rows
+                .next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+            drop(rows);
+            drop(stmt);
+
+            if task.status == TaskStatus::Running {
+                return Err(StoreError::Invalid(format!("task {task_id} is already running")));
+            }
+
+            let engine_id = match task.engine {
+                EngineChoice::Fixed(id) => id,
+                EngineChoice::Auto => EngineId::Claude,
+            };
+
+            let run = Run {
+                id: run_id,
+                task_id: task.id.clone(),
+                engine: engine_id,
+                started_at: started_at.clone(),
+                finished_at: None,
+                exit_reason: None,
+                usage: Usage::default(),
+                snapshot_id: None,
+            };
+
+            tx.execute(
+                "UPDATE tasks SET status = 'running', updated_at = ?1 WHERE id = ?2",
+                params![started_at, task.id],
+            )?;
+
+            tx.execute(
+                "INSERT INTO runs (id, task_id, engine, started_at, finished_at, exit_reason, used_input, used_output, used_cache, snapshot_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    run.id,
+                    run.task_id,
+                    engine_id_to_str(run.engine),
+                    run.started_at,
+                    run.finished_at,
+                    run.exit_reason.map(reason_to_str),
+                    run.usage.input as i64,
+                    run.usage.output as i64,
+                    run.usage.cache as i64,
+                    run.snapshot_id,
+                ],
+            )?;
+
+            tx.commit()?;
+            Ok((task, run))
+        })
+        .await
+    }
+
     pub async fn insert_run(&self, run: Run) -> Result<(), StoreError> {
         self.run(move |conn| {
             conn.execute(
@@ -450,7 +516,8 @@ impl Store {
         usage: Usage,
     ) -> Result<(), StoreError> {
         self.run(move |conn| {
-            conn.execute(
+            let tx = conn.transaction()?;
+            tx.execute(
                 "INSERT INTO limit_hits (engine, window, hit_at, resets_at, used_input, used_output, used_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     engine_id_to_str(engine),
@@ -462,7 +529,7 @@ impl Store {
                     usage.cache as i64,
                 ],
             )?;
-            conn.execute(
+            tx.execute(
                 "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0 WHERE engine = ?2 AND window = ?3",
                 params![
                     resets_at,
@@ -470,6 +537,7 @@ impl Store {
                     window_to_str(window),
                 ],
             )?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -683,5 +751,51 @@ mod tests {
             .unwrap();
         assert_eq!(hit_5h.resets_at.as_deref(), Some("2026-09-04T05:00:00Z"));
         assert_eq!(hit_5h.remaining_pct, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn foreign_keys_prevent_orphan_runs() {
+        let store = Store::open_in_memory().unwrap();
+        let run = Run {
+            id: "r1".into(),
+            task_id: "nonexistent".into(),
+            engine: EngineId::Claude,
+            started_at: "2026-09-04T00:00:00Z".into(),
+            finished_at: None,
+            exit_reason: None,
+            usage: Usage::default(),
+            snapshot_id: None,
+        };
+        assert!(store.insert_run(run).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn claim_task_and_insert_run_atomicity() {
+        let store = Store::open_in_memory().unwrap();
+        let task = Task {
+            id: "t1".into(),
+            prompt: "p".into(),
+            folder: "f".into(),
+            size: TaskSize::S,
+            engine: EngineChoice::Auto,
+            status: TaskStatus::Queued,
+            created_at: "2026-09-04T00:00:00Z".into(),
+            updated_at: "2026-09-04T00:00:00Z".into(),
+        };
+        store.add_task(task).await.unwrap();
+
+        let (t, r) = store
+            .claim_task_and_insert_run("t1".into(), "r1".into(), "2026-09-04T01:00:00Z".into())
+            .await
+            .unwrap();
+        assert_eq!(t.id, "t1");
+        assert_eq!(r.id, "r1");
+        assert_eq!(r.engine, EngineId::Claude);
+
+        let err = store
+            .claim_task_and_insert_run("t1".into(), "r2".into(), "2026-09-04T01:00:00Z".into())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Invalid(_)));
     }
 }
