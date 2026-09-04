@@ -96,7 +96,7 @@ Adapters translate stdout through an `EventMapper`; the shared pump in `EngineRu
 - The app never holds a credential and never calls a model.
 - Never modify or vendor a CLI binary. Official installer only.
 - No network calls from the app except the update check.
-- Webview CSP is `default-src 'self'`; `connect-src` adds only the IPC origins (`ipc:`, and `http://ipc.localhost` on Windows), which carry commands, not network traffic. `style-src 'self' 'unsafe-inline'` is listed because the UI uses inline style attributes; that directive is deliberately permissive. Tauri serves that header from the asset protocol, so `tauri dev` on the Vite URL enforces no CSP - verify against a build. Only Windows/WebView2 is verified; macOS and Linux are untested.
+- Webview CSP is `default-src 'self'`; `connect-src` adds only the IPC origins (`ipc:`, and `http://ipc.localhost` on Windows), which carry commands, not network traffic. `style-src 'self' 'unsafe-inline'` is listed because the UI uses inline style attributes; that directive is deliberately permissive. `img-src 'self' data:` is listed because Vite inlines assets under its size threshold; a future icon would break silently. Tauri serves that header from the asset protocol, so `tauri dev` on the Vite URL enforces no CSP - verify against a build. Only Windows/WebView2 is verified; macOS and Linux are untested.
 - Detect reads exit codes only, never files.
 - Do not prune `limit_hits`.
 - UI screens have 3 controls or fewer.
