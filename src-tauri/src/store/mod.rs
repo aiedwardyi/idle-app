@@ -330,8 +330,10 @@ impl Store {
 
     pub async fn delete_task(&self, id: String) -> Result<(), StoreError> {
         self.run(move |conn| {
-            conn.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
-            conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
+            tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+            tx.commit()?;
             Ok(())
         })
         .await
@@ -367,7 +369,7 @@ impl Store {
         usage: Usage,
     ) -> Result<(), StoreError> {
         self.run(move |conn| {
-            conn.execute(
+            let n = conn.execute(
                 "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6",
                 params![
                     finished_at,
@@ -378,6 +380,9 @@ impl Store {
                     run_id,
                 ],
             )?;
+            if n == 0 {
+                return Err(StoreError::NotFound(format!("run {run_id}")));
+            }
             Ok(())
         })
         .await
@@ -561,9 +566,25 @@ mod tests {
         let list = store2.list_tasks().await.unwrap();
         assert_eq!(list.len(), 1);
 
+        store2
+            .insert_run(Run {
+                id: "r-task-1".into(),
+                task_id: "task-1".into(),
+                engine: EngineId::Claude,
+                started_at: "2026-09-04T00:00:00Z".into(),
+                finished_at: None,
+                exit_reason: None,
+                usage: Usage::default(),
+                snapshot_id: None,
+            })
+            .await
+            .unwrap();
+
         store2.delete_task("task-1".into()).await.unwrap();
         let empty = store2.list_tasks().await.unwrap();
         assert!(empty.is_empty());
+        let empty_runs = store2.list_runs(Some("task-1".into())).await.unwrap();
+        assert!(empty_runs.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -608,6 +629,16 @@ mod tests {
             )
             .await
             .unwrap();
+
+        let missing_err = store
+            .finish_run(
+                "nonexistent".into(),
+                "2026-09-04T01:00:00Z".into(),
+                ExitReason::Ok,
+                Usage::default(),
+            )
+            .await;
+        assert!(matches!(missing_err, Err(StoreError::NotFound(_))));
 
         let runs = store.list_runs(Some("t1".into())).await.unwrap();
         assert_eq!(runs.len(), 1);

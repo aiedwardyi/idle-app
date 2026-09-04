@@ -111,3 +111,24 @@ async fn stop_run_cancels_active_execution() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].exit_reason, Some(ExitReason::Cancelled));
 }
+
+#[tokio::test]
+async fn run_now_rejects_already_running_task() {
+    let store = Store::open_in_memory().unwrap();
+    let state = AppState::new(store.clone());
+
+    let task = Task {
+        id: "task-running".into(),
+        prompt: "echo 1".into(),
+        folder: std::env::temp_dir().to_string_lossy().into_owned(),
+        size: TaskSize::S,
+        engine: EngineChoice::Auto,
+        status: TaskStatus::Running,
+        created_at: "2026-09-04T00:00:00Z".into(),
+        updated_at: "2026-09-04T00:00:00Z".into(),
+    };
+    store.add_task(task.clone()).await.unwrap();
+
+    let err = state.run_now(task.id, |_, _| {}).await.unwrap_err();
+    assert!(err.contains("already running"));
+}

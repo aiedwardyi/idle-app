@@ -78,6 +78,10 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("task not found: {task_id}"))?;
 
+        if task.status == TaskStatus::Running {
+            return Err(format!("task {task_id} is already running"));
+        }
+
         let engine_id = match task.engine {
             EngineChoice::Fixed(id) => id,
             EngineChoice::Auto => EngineId::Claude,
@@ -206,15 +210,42 @@ impl AppState {
             let finished_at = now_rfc3339();
 
             if let Some(resets) = limit_hit_resets {
-                let _ = store
-                    .record_limit_hit(
-                        engine_id,
-                        LimitWindowKind::FiveHour,
-                        finished_at.clone(),
-                        Some(resets),
-                        latest_usage,
-                    )
-                    .await;
+                let meters = store.get_meters().await.unwrap_or_default();
+                let matching_windows: Vec<LimitWindowKind> = meters
+                    .iter()
+                    .filter(|m| m.engine == engine_id && m.resets_at.as_deref() == Some(&resets))
+                    .map(|m| m.window)
+                    .collect();
+
+                // LimitHit carries no window field; match resets_at against existing meters, or fan out to all windows to avoid guessing the wrong bucket.
+                let target_windows: Vec<LimitWindowKind> = if !matching_windows.is_empty() {
+                    matching_windows
+                } else {
+                    crate::contract::default_windows(engine_id)
+                        .into_iter()
+                        .map(|w| w.kind)
+                        .collect()
+                };
+
+                for w in target_windows {
+                    let _ = store
+                        .record_limit_hit(
+                            engine_id,
+                            w,
+                            finished_at.clone(),
+                            Some(resets.clone()),
+                            latest_usage,
+                        )
+                        .await;
+                }
+
+                if let Ok(meters) = store.get_meters().await {
+                    for m in meters.into_iter().filter(|m| m.engine == engine_id) {
+                        if let Ok(val) = serde_json::to_value(&m) {
+                            emit(METER_UPDATE, val);
+                        }
+                    }
+                }
             }
 
             if latest_usage.input > 0 || latest_usage.output > 0 || latest_usage.cache > 0 {
