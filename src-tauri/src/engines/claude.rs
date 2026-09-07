@@ -391,6 +391,9 @@ impl EventMapper for ClaudeStream {
 /// optional in the 2.1.259 schema, so `unifiedWindows` is the fallback, and
 /// that entry's own reset time comes back with it.
 fn rejected_window(info: &Value) -> (Option<LimitWindowKind>, Option<String>) {
+    // An unrecognized rateLimitType returns None on purpose and unifiedWindows
+    // is deliberately not consulted here: the vendor named the rejecting
+    // budget, and honoring that beats guessing a window it did not name.
     if let Some(kind) = info["rateLimitType"].as_str() {
         return (window_of_rate_limit_type(kind), None);
     }
