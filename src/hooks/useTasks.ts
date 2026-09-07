@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineChoice, Task } from "../types";
 import { addTask, deleteTask, listTasks, updateTask } from "../types/ipc";
+import { isAbsolute } from "../lib/folder";
 
 const message = (error: unknown): string =>
   typeof error === "string"
@@ -42,6 +43,12 @@ export function useTasks() {
   }, []);
 
   const add = useCallback(async (prompt: string, folder: string) => {
+    // Last line of defence: the button is disabled without a folder, but the
+    // store must never be handed a relative path whatever the UI does.
+    if (!isAbsolute(folder)) {
+      setError("Task folder must be an absolute path");
+      return;
+    }
     try {
       const created = await addTask({
         prompt,

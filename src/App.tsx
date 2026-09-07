@@ -96,9 +96,10 @@ function App() {
       ? `${queued} queued · ${live === 0 ? "paused" : `${live} ${live === 1 ? "engine" : "engines"} working`}`
       : `${queued} queued`;
 
-  // Resolved async because the fallback is the real home directory rather than
-  // a made-up path. The composer shows whichever it settles on.
-  const [folder, setFolder] = useState("");
+  // `undefined` until it resolves, never "": homeDir() is a round-trip, and an
+  // empty string here would let a fast typer submit a task with no folder,
+  // which the contract forbids. The composer disables send until it settles.
+  const [folder, setFolder] = useState<string | undefined>(undefined);
   useEffect(() => {
     void defaultFolder(active[active.length - 1]?.folder).then(setFolder);
   }, [active]);
@@ -176,7 +177,9 @@ function App() {
       {screen === "tasks" && (
         <Composer
           folder={folder}
-          onSubmit={(prompt) => void add(prompt, folder)}
+          onSubmit={(prompt) => {
+            if (folder !== undefined) void add(prompt, folder);
+          }}
         />
       )}
     </main>

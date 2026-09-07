@@ -240,6 +240,18 @@ describe("live IPC", () => {
     expect(screen.queryByText("Nope")).not.toBeInTheDocument();
   });
 
+  test("a relative folder never reaches add_task", async () => {
+    // The button guards this, but the boundary must hold on its own.
+    ipc.tasks = [{ ...ipc.tasks[0], folder: "code/ledger" }];
+    await renderApp();
+    await user().click(screen.getByLabelText("Queue"));
+    await user().type(screen.getByLabelText("New task"), "Nope");
+    await user().click(screen.getByLabelText("Add to queue"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("absolute path");
+    expect(ipc.calls.some((c) => c.cmd === "add_task")).toBe(false);
+  });
+
   test("picking an engine calls update_task", async () => {
     await renderApp();
     await user().click(screen.getByLabelText("Queue"));
