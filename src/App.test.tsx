@@ -279,6 +279,29 @@ describe("live IPC", () => {
     ).not.toBeInTheDocument();
   });
 
+  test("an Error from a command keeps its message", async () => {
+    // The contract rejects with strings, but a transport failure throws.
+    ipc.fail.get_meters = new Error("invoke failed") as unknown as string;
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("invoke failed");
+  });
+
+  test("deleting then adding does not reuse a task id", async () => {
+    await renderApp();
+    await user().click(screen.getByLabelText("Queue"));
+
+    await user().click(
+      screen.getByLabelText("Remove Draft the migration plan for v3"),
+    );
+    await user().type(screen.getByLabelText("New task"), "Fresh task");
+    await user().click(screen.getByLabelText("Add to queue"));
+
+    await screen.findByText("Fresh task");
+    const ids = ipc.tasks.map((t) => t.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   test("a meter_update replaces one window and leaves the rest alone", async () => {
     await renderApp();
     const before = row("Codex").querySelector(".mpct")?.textContent;

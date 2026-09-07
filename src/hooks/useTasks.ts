@@ -2,13 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { EngineChoice, Task } from "../types";
 import { addTask, deleteTask, listTasks, updateTask } from "../types/ipc";
 import { isAbsolute } from "../lib/folder";
-
-const message = (error: unknown): string =>
-  typeof error === "string"
-    ? error
-    : error instanceof Error
-      ? error.message
-      : "Unknown error";
+import { message } from "../lib/errors";
 
 /**
  * The task list, owned by the store. `tasks === null` means the first load has

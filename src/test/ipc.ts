@@ -15,6 +15,8 @@ export const ipc = {
   fail: {} as Record<string, string>,
   calls: [] as { cmd: string; args: Record<string, unknown> }[],
   listeners: {} as Record<string, Listener[]>,
+  /** Monotonic: array length reuses an id after a delete. */
+  nextId: 0,
 };
 
 const task = (id: string, prompt: string, over: Partial<Task> = {}): Task => ({
@@ -66,6 +68,7 @@ export function resetIpc(): void {
   ipc.fail = {};
   ipc.calls = [];
   ipc.listeners = {};
+  ipc.nextId = ipc.tasks.length;
 }
 
 export function emit(event: string, payload: unknown): void {
@@ -83,7 +86,8 @@ export async function handleInvoke(
     case "list_tasks":
       return [...ipc.tasks];
     case "add_task": {
-      const created = task(`t${ipc.tasks.length + 1}`, args.prompt as string, {
+      ipc.nextId += 1;
+      const created = task(`t${ipc.nextId}`, args.prompt as string, {
         folder: args.folder as string,
         size: args.size as Task["size"],
         engine: args.engine as Task["engine"],

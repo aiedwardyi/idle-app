@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { MeterState } from "../types";
 import { getMeters, listenMeterUpdate } from "../types/ipc";
+import { message } from "../lib/errors";
 
 /**
  * Meters from the store, kept current by the `meter_update` channel. PR-08
@@ -21,7 +22,7 @@ export function useMeters() {
         if (live) setMeters(initial);
       } catch (caught) {
         if (live) {
-          setError(typeof caught === "string" ? caught : "Unknown error");
+          setError(message(caught));
           setMeters([]);
         }
       }
