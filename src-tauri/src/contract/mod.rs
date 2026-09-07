@@ -104,6 +104,8 @@ pub enum RunEvent {
     },
     LimitHit {
         run_id: String,
+        // None when the vendor payload did not name the exhausted window.
+        window: Option<LimitWindowKind>,
         resets_at: Option<String>,
     },
     Finished {
@@ -270,9 +272,18 @@ mod tests {
             (
                 RunEvent::LimitHit {
                     run_id: "r1".into(),
+                    window: Some(LimitWindowKind::Weekly),
                     resets_at: None,
                 },
-                json!({"type": "limitHit", "runId": "r1", "resetsAt": null}),
+                json!({"type": "limitHit", "runId": "r1", "window": "weekly", "resetsAt": null}),
+            ),
+            (
+                RunEvent::LimitHit {
+                    run_id: "r1".into(),
+                    window: None,
+                    resets_at: Some("2026-09-03T02:50:00Z".into()),
+                },
+                json!({"type": "limitHit", "runId": "r1", "window": null, "resetsAt": "2026-09-03T02:50:00Z"}),
             ),
             (
                 RunEvent::Finished {

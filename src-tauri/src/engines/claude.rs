@@ -23,13 +23,18 @@
 //! raw text is always available next to any derived event. Any other type
 //! becomes an `Error` carrying the raw line, never a silent drop.
 //!
+//! Limit policy: a limit hit names its window only when the payload names it,
+//! through `rate_limit_info.rateLimitType` or, failing that, a `unifiedWindows`
+//! entry at full utilization. An `assistant` rate_limit error and the result
+//! text carry no window, so those hits report `None`.
+//!
 //! Detect reads exit codes and stdout only. `--version` gives the version,
 //! `auth status` exits 0 signed in and 1 signed out. Both cost zero tokens.
 //! The adapter never looks at any file the CLI keeps.
 
 use super::{Engine, EngineError, EngineRun, EventMapper, Result, RunCtx};
 use crate::contract::{
-    default_windows, DetectInfo, EngineId, ExitReason, LimitWindow, RunEvent, Task,
+    default_windows, DetectInfo, EngineId, ExitReason, LimitWindow, LimitWindowKind, RunEvent, Task,
 };
 use crate::runner::{RunHandle, Runner};
 use async_trait::async_trait;
@@ -278,6 +283,7 @@ pub fn raw_stdout_line(message: &str) -> Option<String> {
 #[derive(Default)]
 struct ClaudeStream {
     limit_hit: bool,
+    window: Option<LimitWindowKind>,
     resets_at: Option<String>,
     error_seen: bool,
 }
@@ -310,6 +316,9 @@ impl EventMapper for ClaudeStream {
                 let info = &value["rate_limit_info"];
                 if info["status"].as_str() == Some("rejected") {
                     self.limit_hit = true;
+                    if let Some(kind) = rejected_window(info) {
+                        self.window = Some(kind);
+                    }
                     if let Some(ts) = epoch_to_rfc3339(&info["resetsAt"]) {
                         self.resets_at = Some(ts);
                     }
@@ -358,6 +367,7 @@ impl EventMapper for ClaudeStream {
             // A limit is not an error: LimitHit, then Finished, reason LimitHit.
             let hit = RunEvent::LimitHit {
                 run_id: run_id.to_string(),
+                window: self.window,
                 resets_at: self.resets_at.take(),
             };
             return (vec![hit], ExitReason::LimitHit);
@@ -370,6 +380,48 @@ impl EventMapper for ClaudeStream {
         };
         (Vec::new(), reason)
     }
+}
+
+/// Which limit window the vendor said was exhausted, or `None` when the
+/// payload does not say. Never inferred from anything but the payload: a
+/// wrong window marks the wrong meter, and a silent meter beats a wrong bar.
+///
+/// `rateLimitType` is the vendor naming the rejected window directly. It is
+/// optional in the 2.1.259 schema, so `unifiedWindows` is the fallback.
+fn rejected_window(info: &Value) -> Option<LimitWindowKind> {
+    match info["rateLimitType"].as_str() {
+        Some(kind) => window_of_rate_limit_type(kind),
+        None => exhausted_unified_window(&info["unifiedWindows"]),
+    }
+}
+
+/// The vendor's window names. `five_hour` and the `seven_day*` family are
+/// the only ones that name a contract window; `overage` is a credit budget
+/// on top of the plan, not a window, so it stays undetermined.
+fn window_of_rate_limit_type(kind: &str) -> Option<LimitWindowKind> {
+    match kind {
+        "five_hour" => Some(LimitWindowKind::FiveHour),
+        _ if kind.starts_with("seven_day") => Some(LimitWindowKind::Weekly),
+        _ => None,
+    }
+}
+
+/// The one window `unifiedWindows` reports at or over full utilization.
+/// Two distinct windows at once is ambiguous rather than a hit on both, so
+/// that answers `None`.
+fn exhausted_unified_window(windows: &Value) -> Option<LimitWindowKind> {
+    let mut found = None;
+    for (name, stats) in windows.as_object()? {
+        if stats["utilization"].as_f64().unwrap_or(0.0) < 1.0 {
+            continue;
+        }
+        match (window_of_rate_limit_type(name), found) {
+            (Some(kind), None) => found = Some(kind),
+            (Some(kind), Some(prev)) if kind != prev => return None,
+            _ => {}
+        }
+    }
+    found
 }
 
 fn error(run_id: &str, message: String) -> RunEvent {
@@ -561,6 +613,93 @@ mod tests {
         assert_eq!(stream.finish("r", ExitReason::Ok), (vec![], ExitReason::Ok));
     }
 
+    /// A `rate_limit_event` line. The envelope is the real 2.1.259 shape from
+    /// `run_success.jsonl`; the rejected `rate_limit_info` bodies below are
+    /// synthetic, built from the vendor's own schema in that binary.
+    fn rate_limit_line(body: &str) -> String {
+        format!(
+            r#"{{"type":"rate_limit_event","rate_limit_info":{body},"uuid":"8c952288-966d-43e6-b6d7-6b87fabcc850","session_id":"11111111-1111-4111-8111-111111111111"}}"#
+        )
+    }
+
+    fn window_after(lines: &[String]) -> Option<LimitWindowKind> {
+        let mut stream = ClaudeStream::default();
+        for line in lines {
+            stream.map_line("r", line);
+        }
+        match stream.finish("r", ExitReason::Failed) {
+            (closing, ExitReason::LimitHit) => match closing.as_slice() {
+                [RunEvent::LimitHit { window, .. }] => *window,
+                other => panic!("expected one LimitHit, got {other:?}"),
+            },
+            other => panic!("expected a limit hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn five_hour_rejection_names_the_five_hour_window() {
+        let line = rate_limit_line(
+            r#"{"status":"rejected","resetsAt":1788403800,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800},"seven_day":{"utilization":0.38,"resetsAt":1788465600}}}"#,
+        );
+        assert_eq!(window_after(&[line]), Some(LimitWindowKind::FiveHour));
+    }
+
+    #[test]
+    fn seven_day_rejection_names_the_weekly_window() {
+        for kind in ["seven_day", "seven_day_opus", "seven_day_overage_included"] {
+            let line = rate_limit_line(&format!(
+                r#"{{"status":"rejected","resetsAt":1788465600,"rateLimitType":"{kind}"}}"#
+            ));
+            assert_eq!(
+                window_after(&[line]),
+                Some(LimitWindowKind::Weekly),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn unified_windows_answer_only_when_one_window_is_full() {
+        let one = rate_limit_line(
+            r#"{"status":"rejected","unifiedWindows":{"five_hour":{"utilization":0.4,"resetsAt":1788403800},"seven_day":{"utilization":1.0,"resetsAt":1788465600}}}"#,
+        );
+        assert_eq!(window_after(&[one]), Some(LimitWindowKind::Weekly));
+
+        let both = rate_limit_line(
+            r#"{"status":"rejected","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800},"seven_day":{"utilization":1.0,"resetsAt":1788465600}}}"#,
+        );
+        assert_eq!(window_after(&[both]), None, "two full windows is ambiguous");
+
+        let overage_only = rate_limit_line(r#"{"status":"rejected","rateLimitType":"overage"}"#);
+        assert_eq!(
+            window_after(&[overage_only]),
+            None,
+            "overage is a credit budget, not a window"
+        );
+    }
+
+    #[test]
+    fn allowed_rate_limit_event_is_not_a_hit() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"allowed","resetsAt":1788403800,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800}}}"#,
+        );
+        stream.map_line("r", &line);
+        assert_eq!(stream.finish("r", ExitReason::Ok), (vec![], ExitReason::Ok));
+    }
+
+    #[test]
+    fn limit_seen_only_in_result_text_has_no_window() {
+        let result = r#"{"type":"result","is_error":true,"result":"Claude AI usage limit reached|1788403800","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#;
+        assert_eq!(window_after(&[result.to_string()]), None);
+    }
+
+    #[test]
+    fn assistant_rate_limit_error_has_no_window() {
+        let assistant = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"API Error: Rate limit reached"}]},"session_id":"s","uuid":"u","error":"rate_limit"}"#;
+        assert_eq!(window_after(&[assistant.to_string()]), None);
+    }
+
     #[test]
     fn mapper_turns_text_only_limit_into_limit_hit_with_text_reset() {
         let mut stream = ClaudeStream::default();
@@ -577,6 +716,7 @@ mod tests {
             closing,
             vec![RunEvent::LimitHit {
                 run_id: "r".into(),
+                window: None,
                 resets_at: Some("2026-09-03T02:50:00Z".into()),
             }]
         );
