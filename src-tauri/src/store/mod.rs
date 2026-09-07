@@ -8,6 +8,28 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// v1 -> v2: `limit_hits.window` becomes nullable. SQLite cannot drop a
+/// NOT NULL in place, so the table is rebuilt; nothing references it, so
+/// the drop is safe with foreign keys on.
+const MIGRATE_V1_TO_V2: &str = "BEGIN;
+CREATE TABLE limit_hits_v2 (
+    id INTEGER PRIMARY KEY,
+    engine TEXT NOT NULL,
+    window TEXT,
+    hit_at TEXT NOT NULL,
+    resets_at TEXT,
+    used_input INTEGER NOT NULL,
+    used_output INTEGER NOT NULL,
+    used_cache INTEGER NOT NULL
+);
+INSERT INTO limit_hits_v2 SELECT id, engine, window, hit_at, resets_at, used_input, used_output, used_cache FROM limit_hits;
+DROP TABLE limit_hits;
+ALTER TABLE limit_hits_v2 RENAME TO limit_hits;
+CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, window);
+UPDATE schema_version SET version = 2 WHERE id = 1;
+COMMIT;";
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -198,6 +220,17 @@ const SELECT_RUN: &str =
 const SELECT_METER: &str =
     "SELECT engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at FROM meter_state";
 
+/// Brings an older database up to [`SCHEMA_VERSION`]. A fresh database is
+/// already current: `schema.sql` writes the version on its first insert.
+fn migrate(conn: &Connection) -> Result<(), StoreError> {
+    let version: i64 =
+        conn.query_row("SELECT version FROM schema_version", [], |row| row.get(0))?;
+    if version < 2 {
+        conn.execute_batch(MIGRATE_V1_TO_V2)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -217,6 +250,7 @@ impl Store {
             "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         for engine in [
             EngineId::Claude,
             EngineId::Codex,
@@ -507,10 +541,14 @@ impl Store {
         .await
     }
 
+    /// Records a limit hit. `window` is `None` when the engine could not tell
+    /// which window was exhausted: the hit is still ground truth, so the row
+    /// is written, but no meter moves. A guessed bucket is worse than a
+    /// meter that stays where it was.
     pub async fn record_limit_hit(
         &self,
         engine: EngineId,
-        window: LimitWindowKind,
+        window: Option<LimitWindowKind>,
         hit_at: String,
         resets_at: Option<String>,
         usage: Usage,
@@ -521,7 +559,7 @@ impl Store {
                 "INSERT INTO limit_hits (engine, window, hit_at, resets_at, used_input, used_output, used_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     engine_id_to_str(engine),
-                    window_to_str(window),
+                    window.map(window_to_str),
                     hit_at,
                     resets_at,
                     usage.input as i64,
@@ -529,14 +567,16 @@ impl Store {
                     usage.cache as i64,
                 ],
             )?;
-            tx.execute(
-                "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0 WHERE engine = ?2 AND window = ?3",
-                params![
-                    resets_at,
-                    engine_id_to_str(engine),
-                    window_to_str(window),
-                ],
-            )?;
+            if let Some(kind) = window {
+                tx.execute(
+                    "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0 WHERE engine = ?2 AND window = ?3",
+                    params![
+                        resets_at,
+                        engine_id_to_str(engine),
+                        window_to_str(kind),
+                    ],
+                )?;
+            }
             tx.commit()?;
             Ok(())
         })
@@ -555,7 +595,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -737,7 +777,7 @@ mod tests {
         store
             .record_limit_hit(
                 EngineId::Claude,
-                LimitWindowKind::FiveHour,
+                Some(LimitWindowKind::FiveHour),
                 "t2".into(),
                 Some("2026-09-04T05:00:00Z".into()),
                 Usage::default(),
@@ -751,6 +791,125 @@ mod tests {
             .unwrap();
         assert_eq!(hit_5h.resets_at.as_deref(), Some("2026-09-04T05:00:00Z"));
         assert_eq!(hit_5h.remaining_pct, Some(0.0));
+    }
+
+    async fn meter(store: &Store, window: LimitWindowKind) -> MeterState {
+        store
+            .get_meters()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.engine == EngineId::Claude && m.window == window)
+            .expect("claude meter")
+    }
+
+    #[tokio::test]
+    async fn limit_hit_with_a_window_marks_only_that_window() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .record_limit_hit(
+                EngineId::Claude,
+                Some(LimitWindowKind::Weekly),
+                "2026-09-04T02:00:00Z".into(),
+                Some("2026-09-11T02:00:00Z".into()),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+
+        let weekly = meter(&store, LimitWindowKind::Weekly).await;
+        assert_eq!(weekly.remaining_pct, Some(0.0));
+        assert_eq!(weekly.resets_at.as_deref(), Some("2026-09-11T02:00:00Z"));
+
+        let five_hour = meter(&store, LimitWindowKind::FiveHour).await;
+        assert_eq!(
+            five_hour.remaining_pct, None,
+            "the other window is untouched"
+        );
+        assert_eq!(five_hour.resets_at, None);
+
+        let others_clean = store
+            .get_meters()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.engine != EngineId::Claude)
+            .all(|m| m.remaining_pct.is_none() && m.resets_at.is_none());
+        assert!(others_clean, "other engines are untouched");
+    }
+
+    #[tokio::test]
+    async fn limit_hit_without_a_window_records_the_hit_and_no_meter() {
+        let store = Store::open_in_memory().unwrap();
+        let before = store.get_meters().await.unwrap();
+        store
+            .record_limit_hit(
+                EngineId::Claude,
+                None,
+                "2026-09-04T02:00:00Z".into(),
+                Some("2026-09-04T07:00:00Z".into()),
+                Usage {
+                    input: 1,
+                    output: 2,
+                    cache: 3,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(store.get_meters().await.unwrap(), before);
+
+        let (engine, window): (String, Option<String>) = store
+            .run(|conn| {
+                conn.query_row("SELECT engine, window FROM limit_hits", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert_eq!(engine, "claude");
+        assert_eq!(window, None, "no window is stored as NULL, never guessed");
+    }
+
+    #[test]
+    fn v1_database_migrates_to_a_nullable_window() {
+        let path = std::env::temp_dir().join(format!("idle-migrate-{}.db", uuid::Uuid::new_v4()));
+        // The v1 shape of the two tables the migration touches.
+        let v1 = rusqlite::Connection::open(&path).unwrap();
+        v1.execute_batch(
+            "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL);
+             INSERT INTO schema_version (id, version) VALUES (1, 1);
+             CREATE TABLE limit_hits (id INTEGER PRIMARY KEY, engine TEXT NOT NULL, window TEXT NOT NULL, hit_at TEXT NOT NULL, resets_at TEXT, used_input INTEGER NOT NULL, used_output INTEGER NOT NULL, used_cache INTEGER NOT NULL);
+             INSERT INTO limit_hits (engine, window, hit_at, used_input, used_output, used_cache) VALUES ('claude', 'fiveHour', 't', 1, 2, 3);",
+        )
+        .unwrap();
+        drop(v1);
+
+        let store = Store::open(&path).unwrap();
+        drop(store);
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        conn.execute(
+            "INSERT INTO limit_hits (engine, window, hit_at, used_input, used_output, used_cache) VALUES ('claude', NULL, 't', 0, 0, 0)",
+            [],
+        )
+        .expect("window is nullable after the migration");
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM limit_hits WHERE window = 'fiveHour'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "existing rows survive the rebuild");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

@@ -157,7 +157,7 @@ impl AppState {
         tokio::spawn(async move {
             let mut events = engine_run.take_events();
             let mut latest_usage = Usage::default();
-            let mut limit_hit_resets = None;
+            let mut limit_hit: Option<(Option<LimitWindowKind>, Option<String>)> = None;
             let mut killed = false;
 
             loop {
@@ -173,8 +173,8 @@ impl AppState {
                                     RunEvent::Usage { input, output, cache, .. } => {
                                         latest_usage = Usage { input: *input, output: *output, cache: *cache };
                                     }
-                                    RunEvent::LimitHit { resets_at, .. } => {
-                                        limit_hit_resets = resets_at.clone();
+                                    RunEvent::LimitHit { window, resets_at, .. } => {
+                                        limit_hit = Some((*window, resets_at.clone()));
                                     }
                                     _ => {}
                                 }
@@ -191,22 +191,24 @@ impl AppState {
             let reason = engine_run.wait().await;
             let finished_at = now_rfc3339();
 
-            if let Some(resets) = limit_hit_resets {
-                // TODO: RunEvent::LimitHit needs a window field so hits can target the correct bucket; requires CONTRACT.md change in a follow-up PR.
+            if let Some((window, resets_at)) = limit_hit {
                 let _ = store
                     .record_limit_hit(
                         engine_id,
-                        LimitWindowKind::FiveHour,
+                        window,
                         finished_at.clone(),
-                        Some(resets),
+                        resets_at,
                         latest_usage,
                     )
                     .await;
 
-                if let Ok(meters) = store.get_meters().await {
-                    for m in meters.into_iter().filter(|m| m.engine == engine_id) {
-                        if let Ok(val) = serde_json::to_value(&m) {
-                            emit(METER_UPDATE, val);
+                // Without a window no meter moved, so there is nothing to emit.
+                if window.is_some() {
+                    if let Ok(meters) = store.get_meters().await {
+                        for m in meters.into_iter().filter(|m| m.engine == engine_id) {
+                            if let Ok(val) = serde_json::to_value(&m) {
+                                emit(METER_UPDATE, val);
+                            }
                         }
                     }
                 }

@@ -9,8 +9,8 @@
 
 use futures::StreamExt;
 use idle_app_lib::contract::{
-    default_windows, DetectInfo, EngineChoice, EngineId, ExitReason, RunEvent, Task, TaskSize,
-    TaskStatus,
+    default_windows, DetectInfo, EngineChoice, EngineId, ExitReason, LimitWindowKind, RunEvent,
+    Task, TaskSize, TaskStatus,
 };
 use idle_app_lib::engines::claude::{raw_stdout_line, ClaudeEngine};
 use idle_app_lib::engines::{Engine, EngineError, EngineRun, RunCtx};
@@ -197,6 +197,7 @@ async fn limit_hit_is_limit_hit_then_finished_never_error() {
         events[n - 2],
         RunEvent::LimitHit {
             run_id: "r-limit".into(),
+            window: Some(LimitWindowKind::FiveHour),
             resets_at: Some("2026-09-03T02:50:00Z".into()),
         },
         "LimitHit must directly precede Finished: {events:?}"

@@ -27,12 +27,14 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output`, `usage`, `limitHit`, and `error` events, then exactly one `finished`. `error` is valid mid-stream; a malformed line emits `error` and the run continues.
 
+`limitHit.window` is the `LimitWindowKind` the vendor payload named as exhausted, or `null` when the payload did not name one. `null` is legal and is never a guess. A consumer must record the hit and leave every meter alone: no bucket may be picked by default, and the hit must not be spread across an engine's windows.
+
 | `type`     | Fields                              | Terminal? |
 | ---------- | ----------------------------------- | --------- |
 | `started`  | `runId`                             | no        |
 | `output`   | `runId`, `line`                     | no        |
 | `usage`    | `runId`, `input`, `output`, `cache` | no        |
-| `limitHit` | `runId`, `resetsAt`                 | no        |
+| `limitHit` | `runId`, `window`, `resetsAt`       | no        |
 | `finished` | `runId`, `ok`                       | yes       |
 | `error`    | `runId`, `message`                  | no        |
 
@@ -66,9 +68,9 @@ SQLite tables: `tasks`, `runs`, `meter_state`, `limit_hits`, `schema_version`.
 
 Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
 
-`limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
+`limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. `window` is nullable and holds `limitHit.window`, so a hit with no window evidence is still calibration ground truth. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
 
-`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` starts at `1`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row.
+`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` is `2`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row. An older database is upgraded on open by `store::migrate`, which runs the steps above its recorded version and writes the new one.
 
 Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `used_cache`.
 

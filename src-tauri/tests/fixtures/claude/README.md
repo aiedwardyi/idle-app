@@ -19,6 +19,6 @@ org ids remain.
 | `run_success.jsonl`            | Real. Task wrote `hello.txt` via the Write tool and replied `done`. Exit 0.                       |
 | `run_unrecognized_event.jsonl` | Real stream above plus one copy of the `rate_limit_event` line with `type` renamed to `usage_forecast`. |
 | `run_error_result.jsonl`       | Real. `--model bogus-model-xyz`, so `result.is_error` is true with zero usage. Exit 1.            |
-| `run_limit_hit.synthetic.jsonl`| SYNTHETIC. Built from a public 2.1.62 issue log (`rate_limit_event` rejected, `assistant` with `error: rate_limit`, `result` is_error) plus the documented optional `resetsAt` (unix seconds). Replace with a real capture when a limit is actually hit. |
+| `run_limit_hit.synthetic.jsonl`| SYNTHETIC. Built from a public 2.1.62 issue log (`rate_limit_event` rejected, `assistant` with `error: rate_limit`, `result` is_error) plus the documented optional `resetsAt` (unix seconds). Every field name was re-checked against the 2.1.259 binary's own schema. Replace with a real capture when a limit is actually hit. |
 | `auth_status_signed_out.json`  | Real output of `claude auth status` while the CLI reported signed out. Exit 1.                    |
 | `auth_status_signed_in.json`   | Real output of `claude auth status` while signed in, identifiers replaced. Exit 0.                |
