@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 2);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -47,10 +47,12 @@ CREATE TABLE IF NOT EXISTS meter_state (
 );
 
 -- Calibration ground truth. Never prune this table.
+-- window is nullable: a hit whose window the vendor payload did not name is
+-- still ground truth, and inventing a window would corrupt the calibration.
 CREATE TABLE IF NOT EXISTS limit_hits (
     id INTEGER PRIMARY KEY,
     engine TEXT NOT NULL,
-    window TEXT NOT NULL,
+    window TEXT,
     hit_at TEXT NOT NULL,
     resets_at TEXT,
     used_input INTEGER NOT NULL,
