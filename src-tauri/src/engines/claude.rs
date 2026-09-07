@@ -316,10 +316,11 @@ impl EventMapper for ClaudeStream {
                 let info = &value["rate_limit_info"];
                 if info["status"].as_str() == Some("rejected") {
                     self.limit_hit = true;
-                    if let Some(kind) = rejected_window(info) {
-                        self.window = Some(kind);
+                    let (window, window_resets_at) = rejected_window(info);
+                    if window.is_some() {
+                        self.window = window;
                     }
-                    if let Some(ts) = epoch_to_rfc3339(&info["resetsAt"]) {
+                    if let Some(ts) = epoch_to_rfc3339(&info["resetsAt"]).or(window_resets_at) {
                         self.resets_at = Some(ts);
                     }
                 }
@@ -387,11 +388,15 @@ impl EventMapper for ClaudeStream {
 /// wrong window marks the wrong meter, and a silent meter beats a wrong bar.
 ///
 /// `rateLimitType` is the vendor naming the rejected window directly. It is
-/// optional in the 2.1.259 schema, so `unifiedWindows` is the fallback.
-fn rejected_window(info: &Value) -> Option<LimitWindowKind> {
-    match info["rateLimitType"].as_str() {
-        Some(kind) => window_of_rate_limit_type(kind),
-        None => exhausted_unified_window(&info["unifiedWindows"]),
+/// optional in the 2.1.259 schema, so `unifiedWindows` is the fallback, and
+/// that entry's own reset time comes back with it.
+fn rejected_window(info: &Value) -> (Option<LimitWindowKind>, Option<String>) {
+    if let Some(kind) = info["rateLimitType"].as_str() {
+        return (window_of_rate_limit_type(kind), None);
+    }
+    match exhausted_unified_window(&info["unifiedWindows"]) {
+        Some((kind, resets_at)) => (Some(kind), resets_at),
+        None => (None, None),
     }
 }
 
@@ -406,19 +411,23 @@ fn window_of_rate_limit_type(kind: &str) -> Option<LimitWindowKind> {
     }
 }
 
-/// The one window `unifiedWindows` reports at or over full utilization.
-/// Two distinct windows at once is ambiguous rather than a hit on both, so
-/// that answers `None`.
-fn exhausted_unified_window(windows: &Value) -> Option<LimitWindowKind> {
-    let mut found = None;
+/// The one window `unifiedWindows` reports at or over full utilization, with
+/// its reset time. Two distinct windows at once is ambiguous rather than a
+/// hit on both, so that answers `None`. Sub-buckets of one window (the
+/// `seven_day*` family) consolidate instead, keeping the first entry's reset.
+fn exhausted_unified_window(windows: &Value) -> Option<(LimitWindowKind, Option<String>)> {
+    let mut found: Option<(LimitWindowKind, Option<String>)> = None;
     for (name, stats) in windows.as_object()? {
         if stats["utilization"].as_f64().unwrap_or(0.0) < 1.0 {
             continue;
         }
-        match (window_of_rate_limit_type(name), found) {
-            (Some(kind), None) => found = Some(kind),
-            (Some(kind), Some(prev)) if kind != prev => return None,
-            _ => {}
+        let Some(kind) = window_of_rate_limit_type(name) else {
+            continue;
+        };
+        match &found {
+            None => found = Some((kind, epoch_to_rfc3339(&stats["resetsAt"]))),
+            Some((prev, _)) if *prev != kind => return None,
+            Some(_) => {}
         }
     }
     found
@@ -622,18 +631,24 @@ mod tests {
         )
     }
 
-    fn window_after(lines: &[String]) -> Option<LimitWindowKind> {
+    fn hit_after(lines: &[String]) -> (Option<LimitWindowKind>, Option<String>) {
         let mut stream = ClaudeStream::default();
         for line in lines {
             stream.map_line("r", line);
         }
         match stream.finish("r", ExitReason::Failed) {
             (closing, ExitReason::LimitHit) => match closing.as_slice() {
-                [RunEvent::LimitHit { window, .. }] => *window,
+                [RunEvent::LimitHit {
+                    window, resets_at, ..
+                }] => (*window, resets_at.clone()),
                 other => panic!("expected one LimitHit, got {other:?}"),
             },
             other => panic!("expected a limit hit, got {other:?}"),
         }
+    }
+
+    fn window_after(lines: &[String]) -> Option<LimitWindowKind> {
+        hit_after(lines).0
     }
 
     #[test]
@@ -663,7 +678,23 @@ mod tests {
         let one = rate_limit_line(
             r#"{"status":"rejected","unifiedWindows":{"five_hour":{"utilization":0.4,"resetsAt":1788403800},"seven_day":{"utilization":1.0,"resetsAt":1788465600}}}"#,
         );
-        assert_eq!(window_after(&[one]), Some(LimitWindowKind::Weekly));
+        assert_eq!(
+            hit_after(&[one]),
+            (
+                Some(LimitWindowKind::Weekly),
+                Some("2026-09-03T20:00:00Z".into())
+            ),
+            "the chosen window's own reset stands in for an absent top-level one"
+        );
+
+        let same_kind = rate_limit_line(
+            r#"{"status":"rejected","unifiedWindows":{"seven_day":{"utilization":1.0,"resetsAt":1788465600},"seven_day_overage_included":{"utilization":1.0,"resetsAt":1788465600}}}"#,
+        );
+        assert_eq!(
+            window_after(&[same_kind]),
+            Some(LimitWindowKind::Weekly),
+            "sub-buckets of one window are not two windows"
+        );
 
         let both = rate_limit_line(
             r#"{"status":"rejected","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800},"seven_day":{"utilization":1.0,"resetsAt":1788465600}}}"#,
