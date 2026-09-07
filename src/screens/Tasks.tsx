@@ -32,19 +32,24 @@ function toChoice(value: string): EngineChoice {
 
 type Props = {
   tasks: Task[];
+  /** First load has not returned yet. Distinct from an empty queue. */
+  loading: boolean;
   priorities: Record<string, Priority>;
   sort: Sort;
   onEngine: (id: string, engine: EngineChoice) => void;
   onPriority: (id: string, priority: Priority) => void;
+  onRemove: (id: string) => void;
   onSort: (sort: Sort) => void;
 };
 
 export function Tasks({
   tasks,
+  loading,
   priorities,
   sort,
   onEngine,
   onPriority,
+  onRemove,
   onSort,
 }: Props) {
   const bar = (
@@ -62,11 +67,11 @@ export function Tasks({
     </div>
   );
 
-  if (tasks.length === 0) {
+  if (loading || tasks.length === 0) {
     return (
       <div className="stack">
         {bar}
-        <p className="empty">Nothing queued.</p>
+        <p className="empty">{loading ? "Loading…" : "Nothing queued."}</p>
       </div>
     );
   }
@@ -131,6 +136,26 @@ export function Tasks({
                 </select>
               </label>
             </span>
+
+            <button
+              type="button"
+              className="taskdrop"
+              aria-label={`Remove ${task.prompt}`}
+              onClick={() => onRemove(task.id)}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width={11}
+                height={11}
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2.6}
+                strokeLinecap="round"
+              >
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
           </div>
         );
       })}
