@@ -1,6 +1,6 @@
 use crate::contract::{
-    EngineChoice, EngineId, EngineStatus, LimitWindowKind, MeterState, Run, RunEvent, Task,
-    TaskSize, TaskStatus, Usage,
+    EngineChoice, EngineId, EngineStatus, MeterState, Run, RunEvent, Task, TaskSize, TaskStatus,
+    Usage,
 };
 use crate::engines::claude::ClaudeEngine;
 use crate::engines::{Engine, RunCtx};
@@ -157,7 +157,6 @@ impl AppState {
         tokio::spawn(async move {
             let mut events = engine_run.take_events();
             let mut latest_usage = Usage::default();
-            let mut limit_hit: Option<(Option<LimitWindowKind>, Option<String>)> = None;
             let mut killed = false;
 
             loop {
@@ -169,17 +168,37 @@ impl AppState {
                     event = events.next() => {
                         match event {
                             Some(ev) => {
-                                match &ev {
-                                    RunEvent::Usage { input, output, cache, .. } => {
-                                        latest_usage = Usage { input: *input, output: *output, cache: *cache };
-                                    }
-                                    RunEvent::LimitHit { window, resets_at, .. } => {
-                                        limit_hit = Some((*window, resets_at.clone()));
-                                    }
-                                    _ => {}
+                                if let RunEvent::Usage { input, output, cache, .. } = &ev {
+                                    latest_usage = Usage { input: *input, output: *output, cache: *cache };
                                 }
                                 if let Ok(val) = serde_json::to_value(&ev) {
                                     emit(RUN_EVENT, val);
+                                }
+                                if matches!(
+                                    &ev,
+                                    RunEvent::Started { .. }
+                                        | RunEvent::Usage { .. }
+                                        | RunEvent::WindowReading { .. }
+                                        | RunEvent::LimitHit { .. }
+                                ) {
+                                    match store
+                                        .apply_run_event(
+                                            engine_id,
+                                            ev,
+                                            now_rfc3339(),
+                                            latest_usage,
+                                        )
+                                        .await
+                                    {
+                                        Ok(changed) => {
+                                            for m in changed {
+                                                if let Ok(val) = serde_json::to_value(&m) {
+                                                    emit(METER_UPDATE, val);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => eprintln!("meter fold: {e}"),
+                                    }
                                 }
                             }
                             None => break,
@@ -190,39 +209,6 @@ impl AppState {
 
             let reason = engine_run.wait().await;
             let finished_at = now_rfc3339();
-
-            if let Some((window, resets_at)) = limit_hit {
-                let _ = store
-                    .record_limit_hit(
-                        engine_id,
-                        window,
-                        finished_at.clone(),
-                        resets_at,
-                        latest_usage,
-                    )
-                    .await;
-
-                // Without a window no meter moved, so there is nothing to emit.
-                if window.is_some() {
-                    if let Ok(meters) = store.get_meters().await {
-                        for m in meters.into_iter().filter(|m| m.engine == engine_id) {
-                            if let Ok(val) = serde_json::to_value(&m) {
-                                emit(METER_UPDATE, val);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if latest_usage.input > 0 || latest_usage.output > 0 || latest_usage.cache > 0 {
-                if let Ok(meters) = store.update_meters_usage(engine_id, latest_usage).await {
-                    for m in meters {
-                        if let Ok(val) = serde_json::to_value(&m) {
-                            emit(METER_UPDATE, val);
-                        }
-                    }
-                }
-            }
 
             let _ = store
                 .finish_run(run_id_bg.clone(), finished_at.clone(), reason, latest_usage)
@@ -337,6 +323,26 @@ pub async fn list_runs(
 #[tauri::command]
 pub async fn get_meters(state: State<'_, AppState>) -> Result<Vec<MeterState>, String> {
     state.store.get_meters().await.map_err(|e| e.to_string())
+}
+
+pub fn spawn_meter_tick(app: AppHandle, store: Store) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match store.refresh_meters(now_rfc3339()).await {
+                Ok(changed) => {
+                    for m in changed {
+                        if let Ok(val) = serde_json::to_value(&m) {
+                            let _ = app.emit(METER_UPDATE, val);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("meter tick: {e}"),
+            }
+        }
+    });
 }
 
 #[tauri::command]

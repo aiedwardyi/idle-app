@@ -1,6 +1,7 @@
 pub mod contract;
 pub mod engines;
 pub mod ipc;
+pub mod meter;
 pub mod runner;
 pub mod store;
 
@@ -13,7 +14,8 @@ pub fn run() {
             let app_data = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
             let store = store::Store::open(app_data.join("idle.db"))?;
-            app.manage(ipc::AppState::new(store));
+            app.manage(ipc::AppState::new(store.clone()));
+            ipc::spawn_meter_tick(app.app_handle().clone(), store);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
