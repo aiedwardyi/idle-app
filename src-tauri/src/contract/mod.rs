@@ -81,7 +81,7 @@ pub struct Usage {
     pub cache: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(
     tag = "type",
@@ -106,6 +106,12 @@ pub enum RunEvent {
         run_id: String,
         // None when the vendor payload did not name the exhausted window.
         window: Option<LimitWindowKind>,
+        resets_at: Option<String>,
+    },
+    WindowReading {
+        run_id: String,
+        window: LimitWindowKind,
+        utilization: f64,
         resets_at: Option<String>,
     },
     Finished {
@@ -160,6 +166,15 @@ pub struct LimitWindow {
     pub hours: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub enum MeterSource {
+    Vendor,
+    Estimate,
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +186,8 @@ pub struct MeterState {
     pub calibrated: bool,
     pub remaining_pct: Option<f64>,
     pub resets_at: Option<String>,
+    pub source: MeterSource,
+    pub observed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -286,6 +303,15 @@ mod tests {
                 json!({"type": "limitHit", "runId": "r1", "window": null, "resetsAt": "2026-09-03T02:50:00Z"}),
             ),
             (
+                RunEvent::WindowReading {
+                    run_id: "r1".into(),
+                    window: LimitWindowKind::FiveHour,
+                    utilization: 0.13,
+                    resets_at: Some("2026-09-03T02:50:00Z".into()),
+                },
+                json!({"type": "windowReading", "runId": "r1", "window": "fiveHour", "utilization": 0.13, "resetsAt": "2026-09-03T02:50:00Z"}),
+            ),
+            (
                 RunEvent::Finished {
                     run_id: "r1".into(),
                     ok: true,
@@ -306,6 +332,39 @@ mod tests {
             let back: RunEvent = serde_json::from_value(value).unwrap();
             assert_eq!(back, event);
         }
+    }
+
+    #[test]
+    fn meter_state_round_trip_includes_source() {
+        let meter = MeterState {
+            engine: EngineId::Claude,
+            window: LimitWindowKind::FiveHour,
+            used: Usage::default(),
+            capacity_est: None,
+            calibrated: false,
+            remaining_pct: None,
+            resets_at: None,
+            source: MeterSource::None,
+            observed_at: None,
+        };
+        let value = to_value(&meter).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "engine": "claude",
+                "window": "fiveHour",
+                "used": {"input": 0, "output": 0, "cache": 0},
+                "capacityEst": null,
+                "calibrated": false,
+                "remainingPct": null,
+                "resetsAt": null,
+                "source": "none",
+                "observedAt": null,
+            })
+        );
+        assert_eq!(serde_json::from_value::<MeterState>(value).unwrap(), meter);
+        assert_eq!(to_value(&MeterSource::Vendor).unwrap(), json!("vendor"));
+        assert_eq!(to_value(&MeterSource::Estimate).unwrap(), json!("estimate"));
     }
 
     #[test]

@@ -4,39 +4,43 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 ## Types
 
-| Type            | Shape                                                                             |
-| --------------- | --------------------------------------------------------------------------------- |
-| EngineId        | `"claude"` \| `"codex"` \| `"antigravity"` \| `"grok"`                            |
-| TaskSize        | `"s"` \| `"m"` \| `"l"`                                                           |
-| EngineChoice    | `{ type: "auto" }` \| `{ type: "fixed", engine: EngineId }`                       |
-| TaskStatus      | `"queued"` \| `"running"` \| `"done"` \| `"failed"` \| `"discarded"`              |
-| Task            | `{ id, prompt, folder, size, engine, status, createdAt, updatedAt }`              |
-| Usage           | `{ input, output, cache }` (u64, JSON numbers)                                    |
-| RunEvent        | tagged on `type`, every variant includes `runId`, see lifecycle                   |
-| ExitReason      | `"ok"` \| `"failed"` \| `"limitHit"` \| `"cancelled"` \| `"timeout"`              |
-| Run             | `{ id, taskId, engine, startedAt, finishedAt, exitReason, usage, snapshotId }`    |
-| LimitWindowKind | `"fiveHour"` \| `"daily"` \| `"weekly"`                                           |
-| LimitWindow     | `{ kind, hours }`                                                                 |
-| MeterState      | `{ engine, window, used, capacityEst, calibrated, remainingPct (f64), resetsAt }` |
-| DetectInfo      | `{ installed, version, signedIn }`                                                |
-| EngineStatus    | `{ engine, detect }`                                                              |
+| Type            | Shape                                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------------------- |
+| EngineId        | `"claude"` \| `"codex"` \| `"antigravity"` \| `"grok"`                                                |
+| TaskSize        | `"s"` \| `"m"` \| `"l"`                                                                               |
+| EngineChoice    | `{ type: "auto" }` \| `{ type: "fixed", engine: EngineId }`                                           |
+| TaskStatus      | `"queued"` \| `"running"` \| `"done"` \| `"failed"` \| `"discarded"`                                  |
+| Task            | `{ id, prompt, folder, size, engine, status, createdAt, updatedAt }`                                  |
+| Usage           | `{ input, output, cache }` (u64, JSON numbers)                                                        |
+| RunEvent        | tagged on `type`, every variant includes `runId`, see lifecycle                                       |
+| ExitReason      | `"ok"` \| `"failed"` \| `"limitHit"` \| `"cancelled"` \| `"timeout"`                                  |
+| Run             | `{ id, taskId, engine, startedAt, finishedAt, exitReason, usage, snapshotId }`                        |
+| LimitWindowKind | `"fiveHour"` \| `"daily"` \| `"weekly"`                                                               |
+| LimitWindow     | `{ kind, hours }`                                                                                     |
+| MeterSource     | `"vendor"` \| `"estimate"` \| `"none"`                                                                |
+| MeterState      | `{ engine, window, used, capacityEst, calibrated, remainingPct (f64), resetsAt, source, observedAt }` |
+| DetectInfo      | `{ installed, version, signedIn }`                                                                    |
+| EngineStatus    | `{ engine, detect }`                                                                                  |
 
 `id` values are UUID strings. `folder` is an absolute path. Optional fields are `null` when absent.
 
+`MeterSource` says where `remainingPct` came from: `vendor` is the vendor payload's own number, `estimate` is computed from token sums against a learned capacity, `none` means no percent is known and the UI shows a dash.
+
 ## RunEvent lifecycle
 
-Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output`, `usage`, `limitHit`, and `error` events, then exactly one `finished`. `error` is valid mid-stream; a malformed line emits `error` and the run continues.
+Internally tagged on `type`. Every variant carries `runId` so the UI can route up to four concurrent engine streams on one `run_event` channel. A run emits `started`, then zero or more `output`, `usage`, `limitHit`, `windowReading`, and `error` events, then exactly one `finished`. `error` is valid mid-stream; a malformed line emits `error` and the run continues. `windowReading` is the vendor-stated fill level of one window; never derived, never guessed.
 
 `limitHit.window` is the `LimitWindowKind` the vendor payload named as exhausted, or `null` when the payload did not name one. `null` is legal and is never a guess. A consumer must record the hit and leave every meter alone: no bucket may be picked by default, and the hit must not be spread across an engine's windows.
 
-| `type`     | Fields                              | Terminal? |
-| ---------- | ----------------------------------- | --------- |
-| `started`  | `runId`                             | no        |
-| `output`   | `runId`, `line`                     | no        |
-| `usage`    | `runId`, `input`, `output`, `cache` | no        |
-| `limitHit` | `runId`, `window`, `resetsAt`       | no        |
-| `finished` | `runId`, `ok`                       | yes       |
-| `error`    | `runId`, `message`                  | no        |
+| `type`          | Fields                                       | Terminal? |
+| --------------- | -------------------------------------------- | --------- |
+| `started`       | `runId`                                      | no        |
+| `output`        | `runId`, `line`                              | no        |
+| `usage`         | `runId`, `input`, `output`, `cache`          | no        |
+| `limitHit`      | `runId`, `window`, `resetsAt`                | no        |
+| `windowReading` | `runId`, `window`, `utilization`, `resetsAt` | no        |
+| `finished`      | `runId`, `ok`                                | yes       |
+| `error`         | `runId`, `message`                           | no        |
 
 ## IPC commands
 
@@ -70,9 +74,9 @@ Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
 
 `limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. `window` is nullable and holds `limitHit.window`, so a hit with no window evidence is still calibration ground truth. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
 
-`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` is `2`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row. An older database is upgraded on open by `store::migrate`, which runs the steps above its recorded version and writes the new one.
+`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` is `3`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row. An older database is upgraded on open by `store::migrate`, which runs the steps above its recorded version and writes the new one.
 
-Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `used_cache`.
+Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `used_cache`. `meter_state` also stores `source TEXT NOT NULL DEFAULT 'none'` and `observed_at TEXT`.
 
 ## Default windows
 

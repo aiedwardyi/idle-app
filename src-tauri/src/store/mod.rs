@@ -1,6 +1,6 @@
 use crate::contract::{
-    default_windows, EngineChoice, EngineId, ExitReason, LimitWindowKind, MeterState, Run, Task,
-    TaskSize, TaskStatus, Usage,
+    default_windows, EngineChoice, EngineId, ExitReason, LimitWindowKind, MeterSource, MeterState,
+    Run, Task, TaskSize, TaskStatus, Usage,
 };
 use rusqlite::{params, Connection, Row};
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// v1 -> v2: `limit_hits.window` becomes nullable. SQLite cannot drop a
 /// NOT NULL in place, so the table is rebuilt; nothing references it, so
@@ -29,6 +29,13 @@ DROP TABLE limit_hits;
 ALTER TABLE limit_hits_v2 RENAME TO limit_hits;
 CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, window);
 UPDATE schema_version SET version = 2 WHERE id = 1;
+COMMIT;";
+
+/// v2 -> v3: meter_state records where its remaining_pct came from.
+const MIGRATE_V2_TO_V3: &str = "BEGIN;
+ALTER TABLE meter_state ADD COLUMN source TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE meter_state ADD COLUMN observed_at TEXT;
+UPDATE schema_version SET version = 3 WHERE id = 1;
 COMMIT;";
 
 #[derive(Debug, Error)]
@@ -135,6 +142,23 @@ pub fn str_to_window(s: &str) -> Result<LimitWindowKind, StoreError> {
     }
 }
 
+pub fn source_to_str(s: MeterSource) -> &'static str {
+    match s {
+        MeterSource::Vendor => "vendor",
+        MeterSource::Estimate => "estimate",
+        MeterSource::None => "none",
+    }
+}
+
+pub fn str_to_source(s: &str) -> Result<MeterSource, StoreError> {
+    match s {
+        "vendor" => Ok(MeterSource::Vendor),
+        "estimate" => Ok(MeterSource::Estimate),
+        "none" => Ok(MeterSource::None),
+        _ => Err(StoreError::Invalid(format!("source {s}"))),
+    }
+}
+
 pub fn reason_to_str(r: ExitReason) -> &'static str {
     match r {
         ExitReason::Ok => "ok",
@@ -210,6 +234,8 @@ fn row_to_meter(row: &Row) -> rusqlite::Result<MeterState> {
         calibrated: calibrated != 0,
         remaining_pct: row.get(7)?,
         resets_at: row.get(8)?,
+        source: str_to_source(&row.get::<_, String>(9)?)?,
+        observed_at: row.get(10)?,
     })
 }
 
@@ -218,7 +244,7 @@ const SELECT_TASK: &str =
 const SELECT_RUN: &str =
     "SELECT id, task_id, engine, started_at, finished_at, exit_reason, used_input, used_output, used_cache, snapshot_id FROM runs";
 const SELECT_METER: &str =
-    "SELECT engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at FROM meter_state";
+    "SELECT engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at, source, observed_at FROM meter_state";
 
 /// Brings an older database up to [`SCHEMA_VERSION`]. A fresh database is
 /// already current: `schema.sql` writes the version on its first insert.
@@ -228,7 +254,26 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version < 2 {
         conn.execute_batch(MIGRATE_V1_TO_V2)?;
     }
+    if version < 3 {
+        if table_has_column(conn, "meter_state", "source")? {
+            conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
+        } else {
+            conn.execute_batch(MIGRATE_V2_TO_V3)?;
+        }
+    }
     Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, StoreError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone)]
@@ -259,8 +304,12 @@ impl Store {
         ] {
             for window in default_windows(engine) {
                 conn.execute(
-                    "INSERT OR IGNORE INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at) VALUES (?1, ?2, 0, 0, 0, NULL, 0, NULL, NULL)",
-                    params![engine_id_to_str(engine), window_to_str(window.kind)],
+                    "INSERT OR IGNORE INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at, source, observed_at) VALUES (?1, ?2, 0, 0, 0, NULL, 0, NULL, NULL, ?3, NULL)",
+                    params![
+                        engine_id_to_str(engine),
+                        window_to_str(window.kind),
+                        source_to_str(MeterSource::None),
+                    ],
                 )?;
             }
         }
@@ -773,6 +822,8 @@ mod tests {
             .find(|m| m.engine == EngineId::Claude && m.window == LimitWindowKind::FiveHour)
             .unwrap();
         assert_eq!(claude_5h.used.input, 5);
+        assert_eq!(claude_5h.source, MeterSource::None);
+        assert_eq!(claude_5h.observed_at, None);
 
         store
             .record_limit_hit(
@@ -907,6 +958,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, 1, "existing rows survive the rebuild");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v2_database_migrates_meter_source_to_none() {
+        let path =
+            std::env::temp_dir().join(format!("idle-migrate-v2-{}.db", uuid::Uuid::new_v4()));
+        let v2 = rusqlite::Connection::open(&path).unwrap();
+        v2.execute_batch(
+            "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL);
+             INSERT INTO schema_version (id, version) VALUES (1, 2);
+             CREATE TABLE meter_state (
+                engine TEXT NOT NULL,
+                window TEXT NOT NULL,
+                used_input INTEGER NOT NULL,
+                used_output INTEGER NOT NULL,
+                used_cache INTEGER NOT NULL,
+                capacity_est INTEGER,
+                calibrated INTEGER NOT NULL,
+                remaining_pct REAL,
+                resets_at TEXT,
+                PRIMARY KEY (engine, window)
+             );
+             INSERT INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at)
+             VALUES ('claude', 'fiveHour', 10, 20, 30, 1000, 1, 26.4, '2026-09-04T05:00:00Z');",
+        )
+        .unwrap();
+        drop(v2);
+
+        let store = Store::open(&path).unwrap();
+        drop(store);
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let (used_input, remaining, source, observed_at): (i64, f64, String, Option<String>) = conn
+            .query_row(
+                "SELECT used_input, remaining_pct, source, observed_at FROM meter_state WHERE engine = 'claude' AND window = 'fiveHour'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(used_input, 10, "existing rows survive");
+        assert_eq!(remaining, 26.4);
+        assert_eq!(source, "none");
+        assert_eq!(observed_at, None);
 
         drop(conn);
         let _ = std::fs::remove_file(&path);

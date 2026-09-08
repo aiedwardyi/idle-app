@@ -26,7 +26,9 @@
 //! Limit policy: a limit hit names its window only when the payload names it,
 //! through `rate_limit_info.rateLimitType` or, failing that, a `unifiedWindows`
 //! entry at full utilization. An `assistant` rate_limit error and the result
-//! text carry no window, so those hits report `None`.
+//! text carry no window, so those hits report `None`. Every `rate_limit_event`
+//! that carries `unifiedWindows` also emits one `windowReading` per resolved
+//! kind. The adapter never guesses a fill level.
 //!
 //! Detect reads exit codes and stdout only. `--version` gives the version,
 //! `auth status` exits 0 signed in and 1 signed out. Both cost zero tokens.
@@ -314,6 +316,15 @@ impl EventMapper for ClaudeStream {
                 // and has been seen absent on a rejection, so it is kept as a
                 // hint and the result text is a second source below.
                 let info = &value["rate_limit_info"];
+                let mut events = vec![output];
+                for reading in parse_unified_windows(&info["unifiedWindows"]) {
+                    events.push(RunEvent::WindowReading {
+                        run_id: run_id.to_string(),
+                        window: reading.kind,
+                        utilization: reading.utilization,
+                        resets_at: reading.resets_at,
+                    });
+                }
                 if info["status"].as_str() == Some("rejected") {
                     self.limit_hit = true;
                     let (window, window_resets_at) = rejected_window(info);
@@ -324,7 +335,7 @@ impl EventMapper for ClaudeStream {
                         self.resets_at = Some(ts);
                     }
                 }
-                vec![output]
+                events
             }
             Some("result") => {
                 let mut events = vec![output];
@@ -397,9 +408,16 @@ fn rejected_window(info: &Value) -> (Option<LimitWindowKind>, Option<String>) {
     if let Some(kind) = info["rateLimitType"].as_str() {
         return (window_of_rate_limit_type(kind), None);
     }
-    match exhausted_unified_window(&info["unifiedWindows"]) {
-        Some((kind, resets_at)) => (Some(kind), resets_at),
-        None => (None, None),
+    let full: Vec<_> = parse_unified_windows(&info["unifiedWindows"])
+        .into_iter()
+        .filter(|reading| reading.utilization >= 1.0)
+        .collect();
+    let mut kinds = full.iter().map(|reading| reading.kind);
+    match kinds.next() {
+        Some(kind) if kinds.all(|other| other == kind) => {
+            (Some(full[0].kind), full[0].resets_at.clone())
+        }
+        _ => (None, None),
     }
 }
 
@@ -414,26 +432,45 @@ fn window_of_rate_limit_type(kind: &str) -> Option<LimitWindowKind> {
     }
 }
 
-/// The one window `unifiedWindows` reports at or over full utilization, with
-/// its reset time. Two distinct windows at once is ambiguous rather than a
-/// hit on both, so that answers `None`. Sub-buckets of one window (the
-/// `seven_day*` family) consolidate instead, keeping the first entry's reset.
-fn exhausted_unified_window(windows: &Value) -> Option<(LimitWindowKind, Option<String>)> {
-    let mut found: Option<(LimitWindowKind, Option<String>)> = None;
-    for (name, stats) in windows.as_object()? {
-        if stats["utilization"].as_f64().unwrap_or(0.0) < 1.0 {
+struct ParsedWindow {
+    kind: LimitWindowKind,
+    utilization: f64,
+    resets_at: Option<String>,
+}
+
+/// One reading per resolved kind. `seven_day*` buckets collapse to weekly,
+/// keeping the highest utilization and that bucket's reset. Malformed
+/// entries are skipped; an absent or unparseable map is empty. Never guessed.
+fn parse_unified_windows(windows: &Value) -> Vec<ParsedWindow> {
+    let Some(map) = windows.as_object() else {
+        return Vec::new();
+    };
+    let mut best: Vec<ParsedWindow> = Vec::new();
+    for (name, stats) in map {
+        if !stats.is_object() {
             continue;
         }
+        let Some(utilization) = stats["utilization"].as_f64() else {
+            continue;
+        };
         let Some(kind) = window_of_rate_limit_type(name) else {
             continue;
         };
-        match &found {
-            None => found = Some((kind, epoch_to_rfc3339(&stats["resetsAt"]))),
-            Some((prev, _)) if *prev != kind => return None,
+        let resets_at = epoch_to_rfc3339(&stats["resetsAt"]);
+        match best.iter_mut().find(|reading| reading.kind == kind) {
+            Some(prev) if utilization > prev.utilization => {
+                prev.utilization = utilization;
+                prev.resets_at = resets_at;
+            }
             Some(_) => {}
+            None => best.push(ParsedWindow {
+                kind,
+                utilization,
+                resets_at,
+            }),
         }
     }
-    found
+    best
 }
 
 fn error(run_id: &str, message: String) -> RunEvent {
@@ -720,6 +757,126 @@ mod tests {
         );
         stream.map_line("r", &line);
         assert_eq!(stream.finish("r", ExitReason::Ok), (vec![], ExitReason::Ok));
+    }
+
+    fn readings_of(events: &[RunEvent]) -> Vec<(LimitWindowKind, f64, Option<String>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                RunEvent::WindowReading {
+                    window,
+                    utilization,
+                    resets_at,
+                    ..
+                } => Some((*window, *utilization, resets_at.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn allowed_rate_limit_event_emits_window_readings() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"allowed","resetsAt":1788403800,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.13,"resetsAt":1788403800},"seven_day":{"utilization":0.38,"resetsAt":1788465600}}}"#,
+        );
+        let events = stream.map_line("r", &line);
+        assert_eq!(
+            readings_of(&events),
+            vec![
+                (
+                    LimitWindowKind::FiveHour,
+                    0.13,
+                    Some("2026-09-03T02:50:00Z".into())
+                ),
+                (
+                    LimitWindowKind::Weekly,
+                    0.38,
+                    Some("2026-09-03T20:00:00Z".into())
+                ),
+            ]
+        );
+        assert_eq!(stream.finish("r", ExitReason::Ok), (vec![], ExitReason::Ok));
+    }
+
+    #[test]
+    fn weekly_reading_keeps_the_highest_utilization_bucket() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"allowed_warning","unifiedWindows":{"seven_day":{"utilization":0.3,"resetsAt":1788465600},"seven_day_opus":{"utilization":0.8,"resetsAt":1788403800},"overage":{"utilization":0.9,"resetsAt":1788403800}}}"#,
+        );
+        assert_eq!(
+            readings_of(&stream.map_line("r", &line)),
+            vec![(
+                LimitWindowKind::Weekly,
+                0.8,
+                Some("2026-09-03T02:50:00Z".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn absent_or_unparseable_unified_windows_emit_no_readings() {
+        let mut stream = ClaudeStream::default();
+        let absent = rate_limit_line(r#"{"status":"allowed","rateLimitType":"five_hour"}"#);
+        assert!(readings_of(&stream.map_line("r", &absent)).is_empty());
+        let junk = rate_limit_line(r#"{"status":"allowed","unifiedWindows":"nope"}"#);
+        assert!(readings_of(&stream.map_line("r", &junk)).is_empty());
+        let mixed = rate_limit_line(
+            r#"{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.2,"resetsAt":1788403800},"seven_day":"bad","daily":{"utilization":0.5,"resetsAt":1788403800}}}"#,
+        );
+        assert_eq!(
+            readings_of(&stream.map_line("r", &mixed)),
+            vec![(
+                LimitWindowKind::FiveHour,
+                0.2,
+                Some("2026-09-03T02:50:00Z".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn rejected_emits_readings_then_limit_hit() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"rejected","resetsAt":1788403800,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800},"seven_day":{"utilization":0.38,"resetsAt":1788465600}}}"#,
+        );
+        let events = stream.map_line("r", &line);
+        assert_eq!(readings_of(&events).len(), 2);
+        let (closing, reason) = stream.finish("r", ExitReason::Failed);
+        assert_eq!(reason, ExitReason::LimitHit);
+        assert_eq!(
+            closing,
+            vec![RunEvent::LimitHit {
+                run_id: "r".into(),
+                window: Some(LimitWindowKind::FiveHour),
+                resets_at: Some("2026-09-03T02:50:00Z".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn overage_rejection_does_not_borrow_a_window_from_readings() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"rejected","rateLimitType":"overage","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800}}}"#,
+        );
+        let events = stream.map_line("r", &line);
+        assert_eq!(
+            readings_of(&events),
+            vec![(
+                LimitWindowKind::FiveHour,
+                1.0,
+                Some("2026-09-03T02:50:00Z".into())
+            )]
+        );
+        match stream.finish("r", ExitReason::Failed) {
+            (closing, ExitReason::LimitHit) => match closing.as_slice() {
+                [RunEvent::LimitHit { window: None, .. }] => {}
+                other => panic!("LimitHit.window must stay None, got {other:?}"),
+            },
+            other => panic!("expected a limit hit, got {other:?}"),
+        }
     }
 
     #[test]

@@ -315,6 +315,8 @@ describe("live IPC", () => {
         calibrated: true,
         remainingPct: 1,
         resetsAt: null,
+        source: "none",
+        observedAt: null,
       });
     });
 

@@ -5,6 +5,7 @@ export type { EngineStatus } from "./generated/EngineStatus";
 export type { ExitReason } from "./generated/ExitReason";
 export type { LimitWindow } from "./generated/LimitWindow";
 export type { LimitWindowKind } from "./generated/LimitWindowKind";
+export type { MeterSource } from "./generated/MeterSource";
 export type { MeterState } from "./generated/MeterState";
 export type { Run } from "./generated/Run";
 export type { RunEvent } from "./generated/RunEvent";

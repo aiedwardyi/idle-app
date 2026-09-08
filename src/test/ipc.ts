@@ -43,6 +43,8 @@ const meter = (
   calibrated: true,
   remainingPct: 26.4,
   resetsAt: new Date(Date.now() + 8_040_000).toISOString(),
+  source: "none",
+  observedAt: null,
   ...over,
 });
 
