@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import {
   DEFAULT_PREFERENCES,
+  effectiveMode,
   loadPreferences,
   savePreferences,
 } from "./preferences";
@@ -18,6 +19,7 @@ describe("loadPreferences", () => {
 
   test("round-trips a saved appearance", () => {
     const saved = {
+      ...DEFAULT_PREFERENCES,
       theme: "console",
       mode: "dark",
       accent: "teal",
@@ -25,6 +27,23 @@ describe("loadPreferences", () => {
       sort: "priority",
       pro: true,
       hiddenEngines: ["grok"],
+      accentCustom: "#ff8800",
+      opacity: 60,
+      density: "tiny",
+      font: "mono",
+      radius: "pill",
+      bar: "ticks",
+      showFooter: false,
+      windowSize: "tall",
+      autoDark: true,
+      barsOnly: true,
+      showHistory: true,
+      order: ["t3", "t1"],
+      templates: ["Rotate the API keys"],
+      engineOrder: ["grok", "claude", "codex", "antigravity"],
+      tight: 55,
+      near: 91,
+      defaultWindow: { claude: "weekly" },
     } as const;
     savePreferences(saved);
     expect(loadPreferences()).toEqual(saved);
@@ -70,13 +89,8 @@ describe("loadPreferences", () => {
       JSON.stringify({ theme: "bento", accent: "puce" }),
     );
     expect(loadPreferences()).toEqual({
+      ...DEFAULT_PREFERENCES,
       theme: "bento",
-      mode: DEFAULT_PREFERENCES.mode,
-      accent: DEFAULT_PREFERENCES.accent,
-      alwaysOnTop: DEFAULT_PREFERENCES.alwaysOnTop,
-      sort: DEFAULT_PREFERENCES.sort,
-      pro: DEFAULT_PREFERENCES.pro,
-      hiddenEngines: DEFAULT_PREFERENCES.hiddenEngines,
     });
   });
 
@@ -97,5 +111,78 @@ describe("loadPreferences", () => {
   test("a non-array hiddenEngines hides nothing", () => {
     window.localStorage.setItem(KEY, JSON.stringify({ hiddenEngines: "grok" }));
     expect(loadPreferences().hiddenEngines).toEqual([]);
+  });
+
+  test("only a six-digit hex survives as a custom accent", () => {
+    // This string is written into a CSS custom property, so it is the one
+    // stored value that could do more than look wrong.
+    for (const bad of ["red", "#fff", "url(x)", "#12345g", 7]) {
+      window.localStorage.setItem(KEY, JSON.stringify({ accentCustom: bad }));
+      expect(loadPreferences().accentCustom).toBeNull();
+    }
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ accentCustom: "#AABBCC" }),
+    );
+    expect(loadPreferences().accentCustom).toBe("#aabbcc");
+  });
+
+  test("opacity and thresholds are clamped, not trusted", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ opacity: 5, tight: -20, near: 400 }),
+    );
+    const loaded = loadPreferences();
+    expect(loaded.opacity).toBe(45);
+    expect(loaded.tight).toBe(10);
+    expect(loaded.near).toBe(99);
+  });
+
+  test("near limit can never sink below tight", () => {
+    window.localStorage.setItem(KEY, JSON.stringify({ tight: 80, near: 40 }));
+    const loaded = loadPreferences();
+    expect(loaded.near).toBeGreaterThan(loaded.tight);
+  });
+
+  test("a partial engine order is completed, not honoured as-is", () => {
+    window.localStorage.setItem(KEY, JSON.stringify({ engineOrder: ["grok"] }));
+    expect(loadPreferences().engineOrder).toEqual([
+      "grok",
+      "claude",
+      "codex",
+      "antigravity",
+    ]);
+  });
+
+  test("junk in defaultWindow is dropped key by key", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        defaultWindow: { claude: "weekly", bard: "weekly", grok: "yearly" },
+      }),
+    );
+    expect(loadPreferences().defaultWindow).toEqual({ claude: "weekly" });
+  });
+});
+
+describe("effectiveMode", () => {
+  const at = (hour: number) => new Date(2026, 8, 1, hour, 0, 0);
+
+  test("is the chosen mode unless auto dark is on", () => {
+    const base = { ...DEFAULT_PREFERENCES, mode: "light" as const, pro: true };
+    expect(effectiveMode(base, at(22))).toBe("light");
+    expect(effectiveMode({ ...base, autoDark: true }, at(22))).toBe("dark");
+    expect(effectiveMode({ ...base, autoDark: true }, at(12))).toBe("light");
+    expect(effectiveMode({ ...base, autoDark: true }, at(3))).toBe("dark");
+  });
+
+  test("auto dark is a pro setting, so it does nothing while pro is off", () => {
+    const off = {
+      ...DEFAULT_PREFERENCES,
+      autoDark: true,
+      pro: false,
+      mode: "light" as const,
+    };
+    expect(effectiveMode(off, at(22))).toBe("light");
   });
 });

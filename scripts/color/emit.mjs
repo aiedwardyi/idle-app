@@ -23,10 +23,12 @@ const SHAPE = {
 function themeTokens(theme, mode) {
   const n = ramp(THEME_HUE[theme], { mode });
   const alpha = theme === "glass" ? 0.82 : theme === "minimal" ? 0.9 : 1;
-  const surface =
-    alpha === 1
-      ? S(n, 2)
-      : `color-mix(in srgb, ${S(n, 2)} ${Math.round(alpha * 100)}%, transparent)`;
+  // Always a color-mix, even for the opaque themes: pro mode drives the
+  // widget's opacity through --w-opacity, and a bare hex has nothing to drive.
+  // The theme's own alpha stays the default, so nothing moves until asked.
+  const surface = `color-mix(in srgb, ${S(n, 2)} var(--w-opacity, ${Math.round(
+    alpha * 100,
+  )}%), transparent)`;
   return [
     `  --w-surface: ${surface};`,
     `  --w-surface-2: ${S(n, 3)};`,

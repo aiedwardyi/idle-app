@@ -12,3 +12,17 @@ export async function applyAlwaysOnTop(value: boolean): Promise<void> {
     // Not running under Tauri.
   }
 }
+
+/**
+ * Size presets. Same swallow-the-failure reasoning as above; requires
+ * core:window:allow-set-size in the capability file.
+ */
+export async function applySize(width: number, height: number): Promise<void> {
+  try {
+    const { getCurrentWindow, LogicalSize } =
+      await import("@tauri-apps/api/window");
+    await getCurrentWindow().setSize(new LogicalSize(width, height));
+  } catch {
+    // Not running under Tauri.
+  }
+}

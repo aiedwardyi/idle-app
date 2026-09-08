@@ -27,6 +27,10 @@ type Props = {
   selected: LimitWindowKind;
   running: boolean;
   now: Date;
+  /** Percent used at which the row starts reading tight / near limit. */
+  levels?: { tight: number; near: number };
+  /** The state, percent and token line. Hidden by a pro preference. */
+  showFooter?: boolean;
   onSelectWindow: (kind: LimitWindowKind) => void;
   onToggleRun: () => void;
 };
@@ -36,6 +40,8 @@ export function MeterRow({
   selected,
   running,
   now,
+  levels,
+  showFooter = true,
   onSelectWindow,
   onToggleRun,
 }: Props) {
@@ -43,7 +49,7 @@ export function MeterRow({
     group.windows.find((w) => w.window === selected) ?? group.windows[0];
   const label = ENGINE_LABEL[group.engine];
   const pct = usedPct(meter);
-  const level = levelFor(pct);
+  const level = levelFor(pct, levels);
   const exhausted = level === "hit";
   const resets = formatUntil(meter.resetsAt, now);
 
@@ -123,23 +129,25 @@ export function MeterRow({
         </div>
       </div>
 
-      <div className="mfoot">
-        <span className="state">
-          <Icon name={LEVEL_ICON[level]} size={11} strokeWidth={2.6} />
-          {LEVEL_WORD[level]}
-        </span>
-        <span className="mpct">
-          {pct === null
-            ? "—"
-            : `${meter.calibrated ? "" : "~"}${Math.round(pct)}% used`}
-        </span>
-        <span className="tokens">
-          {formatTokens(totalUsage(meter.used))}
-          {meter.capacityEst === null
-            ? ""
-            : ` / ${meter.calibrated ? "" : "~"}${formatTokens(meter.capacityEst)}`}
-        </span>
-      </div>
+      {showFooter && (
+        <div className="mfoot">
+          <span className="state">
+            <Icon name={LEVEL_ICON[level]} size={11} strokeWidth={2.6} />
+            {LEVEL_WORD[level]}
+          </span>
+          <span className="mpct">
+            {pct === null
+              ? "—"
+              : `${meter.calibrated ? "" : "~"}${Math.round(pct)}% used`}
+          </span>
+          <span className="tokens">
+            {formatTokens(totalUsage(meter.used))}
+            {meter.capacityEst === null
+              ? ""
+              : ` / ${meter.calibrated ? "" : "~"}${formatTokens(meter.capacityEst)}`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

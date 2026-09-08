@@ -3,6 +3,16 @@
    docs/COLOR.md records the rules and their sources. Do not hand-edit. */
 @import "./styles/tokens.css";
 
+/* The corner presets have to redefine a token, and tokens.css is unlayered:
+   a layered redeclaration loses to it whatever its specificity, so these two
+   rules sit outside @layer on purpose. */
+:root[data-radius="sharp"] {
+  --w-radius: 5px;
+}
+:root[data-radius="pill"] {
+  --w-radius: 30px;
+}
+
 html,
 body {
   height: 100%;
@@ -76,16 +86,18 @@ body {
     font-variant-numeric: tabular-nums;
   }
 
-  /* The pro switch. Its pressed state is carried by weight and a tinted
-     ground, not by white-on-accent: the word is 0.56rem, so it needs 4.5:1
-     and ink over a 16% tint keeps it. The ring is the accent, which is a
-     graphical object at 3:1. */
-  .propill {
+  /* The pro switch. A pill with a word in it read as a badge, not a control,
+     so it carries the same track-and-knob shape as every other toggle in the
+     app — at strip scale. The label stays in text ink over at most a 16%
+     tint, because 0.56rem uppercase still owes 4.5:1. */
+  .proswitch {
+    display: flex;
     flex: 0 0 auto;
-    padding: 3px 8px;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px 3px 4px;
     border-radius: 999px;
-    background: var(--w-track);
-    box-shadow: inset 0 0 0 1px var(--w-ring);
+    background: transparent;
     color: var(--w-ink-3);
     cursor: pointer;
     font: inherit;
@@ -97,13 +109,47 @@ body {
       background 0.15s,
       color 0.15s;
   }
-  .propill:hover {
+  .swtrack {
+    position: relative;
+    display: block;
+    width: 22px;
+    height: 13px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    transition:
+      background 0.18s,
+      box-shadow 0.18s;
+  }
+  .swtrack::after {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--w-ink-3);
+    content: "";
+    transition:
+      transform 0.18s,
+      background 0.18s;
+  }
+  .proswitch:hover {
+    background: var(--w-track);
     color: var(--w-ink-2);
   }
-  .propill[aria-pressed="true"] {
+  .proswitch[aria-pressed="true"] {
     background: color-mix(in oklab, var(--accent) 16%, transparent);
-    box-shadow: inset 0 0 0 1px var(--accent);
     color: var(--w-ink);
+  }
+  .proswitch[aria-pressed="true"] .swtrack {
+    background: var(--accent);
+    box-shadow: none;
+  }
+  .proswitch[aria-pressed="true"] .swtrack::after {
+    background: #fff;
+    transform: translateX(9px);
   }
 
   .actions {
@@ -786,5 +832,376 @@ body {
   .toggle::after,
   .rowplay {
     transition: none;
+  }
+}
+
+/* ===================================================================== */
+/* Pro mode. Everything here is opt-in and keyed off a root attribute, so
+   the shipped look is whatever these selectors do not match. Written as
+   overrides rather than edits to the base rules for exactly that reason. */
+/* ===================================================================== */
+@layer components {
+  /* --- density ----------------------------------------------------------- */
+  :root[data-density="compact"] .body,
+  :root[data-density="tiny"] .body {
+    padding-top: 0;
+  }
+  :root[data-density="compact"] .meters {
+    gap: 5px;
+  }
+  :root[data-density="compact"] .meter-row {
+    padding: 5px 8px 4px;
+  }
+  :root[data-density="compact"] .mhead {
+    margin-bottom: 3px;
+  }
+  :root[data-density="compact"] .mfoot {
+    margin-top: 3px;
+  }
+  :root[data-density="compact"] .stack {
+    gap: 5px;
+  }
+  :root[data-density="compact"] .task {
+    padding: 6px 8px;
+  }
+
+  :root[data-density="tiny"] .meters {
+    gap: 3px;
+  }
+  :root[data-density="tiny"] .meter-row {
+    padding: 3px 7px 3px;
+  }
+  :root[data-density="tiny"] .mhead {
+    margin-bottom: 2px;
+  }
+  :root[data-density="tiny"] .mfoot {
+    margin-top: 2px;
+    font-size: 0.58rem;
+  }
+  :root[data-density="tiny"] .mname {
+    font-size: 0.7rem;
+  }
+  :root[data-density="tiny"] .resets b {
+    font-size: 0.8rem;
+  }
+  :root[data-density="tiny"] .track {
+    height: 6px;
+  }
+  :root[data-density="tiny"] .rowplay {
+    width: 20px;
+    height: 20px;
+  }
+  :root[data-density="tiny"] .stack {
+    gap: 3px;
+  }
+  :root[data-density="tiny"] .task {
+    padding: 4px 7px;
+  }
+  :root[data-density="tiny"] .strip {
+    padding: 6px 10px 5px;
+  }
+
+  /* --- font -------------------------------------------------------------- */
+  :root[data-font="mono"] .widget,
+  :root[data-font="mono"] .widget * {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  :root[data-font="rounded"] .widget,
+  :root[data-font="rounded"] .widget * {
+    font-family:
+      ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", Quicksand,
+      system-ui, sans-serif;
+  }
+
+  /* --- corner radius ----------------------------------------------------- */
+  :root[data-radius="sharp"] .meter-row,
+  :root[data-radius="sharp"] .section,
+  :root[data-radius="sharp"] .section > summary,
+  :root[data-radius="sharp"] .task,
+  :root[data-radius="sharp"] .banner,
+  :root[data-radius="sharp"] .composer-input,
+  :root[data-radius="sharp"] .iconbtn,
+  :root[data-radius="sharp"] .tbtn,
+  :root[data-radius="sharp"] .swatch {
+    border-radius: 3px;
+  }
+  :root[data-radius="sharp"] .track,
+  :root[data-radius="sharp"] .fill,
+  :root[data-radius="sharp"] .state,
+  :root[data-radius="sharp"] .rowplay {
+    border-radius: 2px;
+  }
+
+  :root[data-radius="pill"] .meter-row,
+  :root[data-radius="pill"] .section,
+  :root[data-radius="pill"] .section > summary,
+  :root[data-radius="pill"] .task,
+  :root[data-radius="pill"] .banner,
+  :root[data-radius="pill"] .composer-input,
+  :root[data-radius="pill"] .tbtn {
+    border-radius: 18px;
+  }
+  :root[data-radius="pill"] .iconbtn,
+  :root[data-radius="pill"] .swatch {
+    border-radius: 999px;
+  }
+
+  /* --- bar style --------------------------------------------------------- */
+  /* Striped is already what an uncalibrated fill does, so this reuses the
+     same hatch rather than inventing a second one. */
+  :root[data-bar="striped"] .fill {
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.42) 0 3px,
+      transparent 3px 6px
+    );
+  }
+  /* Ticks sit over the fill, not under it, so they read as a scale on the
+     bar rather than as texture in the empty part. */
+  :root[data-bar="ticks"] .track::after {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    background-image: repeating-linear-gradient(
+      90deg,
+      transparent 0 calc(10% - 1px),
+      var(--w-ring) calc(10% - 1px) 10%
+    );
+    content: "";
+    pointer-events: none;
+  }
+
+  /* --- bars only --------------------------------------------------------- */
+  /* Names and footers go; the play button keeps its engine name in its
+     aria-label, so the row is still identifiable to a screen reader.
+     This is the one place the app knowingly breaks COLOR.md rule 9 — with
+     the footer gone, the fill colour carries severity on its own. It is
+     opt-in, off by default, and the reset time is still spelled out, which
+     is the number the user acts on anyway. */
+  :root[data-bars-only="true"] .mhead .mname,
+  :root[data-bars-only="true"] .mfoot {
+    display: none;
+  }
+  :root[data-bars-only="true"] .mhead {
+    margin-bottom: 3px;
+  }
+  :root[data-bars-only="true"] .meter-row {
+    padding: 5px 9px;
+  }
+
+  /* --- settings: sliders and numbers ------------------------------------- */
+  .slider {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .sliderrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .sliderrow .num {
+    min-width: 34px;
+    text-align: right;
+    font-size: 0.68rem;
+    color: var(--w-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .colorpick {
+    width: 30px;
+    height: 22px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    cursor: pointer;
+  }
+  .linkbtn {
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.62rem;
+  }
+  .linkbtn:hover {
+    color: var(--w-ink);
+  }
+
+  /* --- settings: engine order ------------------------------------------- */
+  .ordbtns {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 3px;
+  }
+  .ordbtns button {
+    display: grid;
+    width: 21px;
+    height: 21px;
+    place-items: center;
+    border-radius: 6px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.6rem;
+    line-height: 1;
+  }
+  .ordbtns button:hover:not(:disabled) {
+    color: var(--w-ink);
+  }
+  .ordbtns button:disabled {
+    cursor: not-allowed;
+    opacity: 0.3;
+  }
+  .winpick {
+    padding: 2px 4px;
+    border-radius: 6px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    font: inherit;
+    font-size: 0.62rem;
+  }
+
+  /* --- queue: filter chips ---------------------------------------------- */
+  .chiprow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    padding: 0 0 2px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.6rem;
+  }
+  .chip:hover {
+    color: var(--w-ink);
+  }
+  .chip[aria-pressed="true"] {
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--w-ink);
+    font-weight: 600;
+  }
+  .chip .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  /* --- queue: bulk actions ---------------------------------------------- */
+  .bulkbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 7px;
+    border-radius: 9px;
+    background: color-mix(in oklab, var(--accent) 12%, var(--w-surface-2));
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    font-size: 0.66rem;
+  }
+  .bulkbar .count {
+    flex: 1 1 auto;
+    color: var(--w-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .bulkbar select {
+    border-radius: 6px;
+    background: var(--w-surface-2);
+    color: var(--w-ink);
+    font: inherit;
+    font-size: 0.66rem;
+  }
+  .taskpick {
+    flex: 0 0 auto;
+    margin-right: 2px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .task[data-dragging="true"] {
+    opacity: 0.45;
+  }
+  .task[data-dropping="true"] {
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .grip {
+    flex: 0 0 auto;
+    padding: 0 2px;
+    color: var(--w-ink-3);
+    cursor: grab;
+    font-size: 0.7rem;
+    line-height: 1;
+  }
+
+  /* --- composer: templates and folder ----------------------------------- */
+  .cbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 2px 4px;
+  }
+  .cbar .grow {
+    flex: 1 1 auto;
+    overflow: hidden;
+    font-size: 0.58rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--w-ink-3);
+  }
+  .tmpl {
+    display: inline-flex;
+    max-width: 130px;
+    align-items: center;
+    border-radius: 999px;
+    background: var(--w-track);
+    color: var(--w-ink-2);
+    font-size: 0.58rem;
+  }
+  .tmplname {
+    overflow: hidden;
+    max-width: 104px;
+    padding: 2px 2px 2px 7px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tmplx {
+    padding: 2px 6px 2px 3px;
+    background: none;
+    color: var(--w-ink-3);
+    cursor: pointer;
+    font: inherit;
+    line-height: 1;
+  }
+  .tmpl:hover {
+    color: var(--w-ink);
+  }
+  .composer .cbar,
+  .composer .folderin {
+    grid-column: 1 / -1;
+  }
+  .folderin {
+    width: 100%;
+    padding: 4px 6px;
+    border-radius: 7px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink);
+    font: inherit;
+    font-size: 0.62rem;
   }
 }

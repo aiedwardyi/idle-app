@@ -28,7 +28,10 @@ describe("Composer", () => {
     await user.type(screen.getByLabelText("New task"), "Rotate the API keys");
     await user.click(screen.getByLabelText("Add to queue"));
 
-    expect(onSubmit).toHaveBeenCalledWith("Rotate the API keys");
+    expect(onSubmit).toHaveBeenCalledWith(
+      "Rotate the API keys",
+      "/Users/you/code",
+    );
     expect(screen.getByText("runs in /Users/you/code")).toBeInTheDocument();
   });
 });

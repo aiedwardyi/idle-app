@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
@@ -16,6 +16,23 @@ const row = (name: string) =>
   screen
     .getByText(name, { selector: ".mname" })
     .closest(".meter-row") as HTMLElement;
+
+/** Settings only exists in pro mode, so most of these have to unlock it. */
+const openSettings = async (u: ReturnType<typeof userEvent.setup>) => {
+  await u.click(screen.getByLabelText("Pro mode"));
+  await u.click(screen.getByLabelText("Settings"));
+};
+
+const openLook = async (u: ReturnType<typeof userEvent.setup>) => {
+  await openSettings(u);
+  await u.click(screen.getByText("Colour & Theme"));
+};
+
+/** Pro is already on by this point, so only the tab needs clicking. */
+const openSettingsAgain = async (u: ReturnType<typeof userEvent.setup>) => {
+  await u.click(screen.getByLabelText("Settings"));
+  await u.click(screen.getByText("Colour & Theme"));
+};
 
 describe("widget shell", () => {
   test("shows one row per engine", async () => {
@@ -43,7 +60,7 @@ describe("window dragging", () => {
 
     // the action buttons are siblings of the text, so they stay clickable
     expect(
-      strip?.querySelector('.actions [aria-label="Settings"]'),
+      strip?.querySelector('.actions [aria-label="Queue"]'),
     ).toBeInTheDocument();
   });
 });
@@ -75,11 +92,13 @@ describe("the reset countdown", () => {
 });
 
 describe("screen navigation", () => {
-  test("three tabs, always visible, with the active one marked", async () => {
+  test("two tabs by default, with the active one marked", async () => {
     await renderApp();
-    for (const name of ["Meters", "Queue", "Settings"]) {
+    for (const name of ["Meters", "Queue"]) {
       expect(screen.getByLabelText(name)).toBeInTheDocument();
     }
+    // Nothing to configure without pro, so there is nothing to open.
+    expect(screen.queryByLabelText("Settings")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Meters")).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -114,14 +133,13 @@ describe("screen navigation", () => {
   test("the settings tab opens settings", async () => {
     const user = userEvent.setup();
     await renderApp();
-
-    await user.click(screen.getByLabelText("Settings"));
+    await openSettings(user);
 
     // sections start collapsed
-    expect(screen.getByText("Look & Feel")).toBeInTheDocument();
+    expect(screen.getByText("Colour & Theme")).toBeInTheDocument();
     expect(screen.queryByText("Always on top")).not.toBeVisible();
 
-    await user.click(screen.getByText("Look & Feel"));
+    await user.click(screen.getByText("Colour & Theme"));
     expect(screen.getByText("Always on top")).toBeVisible();
     expect(screen.getByText("Theme")).toBeVisible();
     expect(screen.getByText("Mode")).toBeVisible();
@@ -175,7 +193,7 @@ describe("the composer", () => {
     expect(screen.queryByLabelText("New task")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Queue"));
     expect(screen.getByLabelText("New task")).toBeInTheDocument();
-    await user.click(screen.getByLabelText("Settings"));
+    await user.click(screen.getByLabelText("Meters"));
     expect(screen.queryByLabelText("New task")).not.toBeInTheDocument();
   });
 });
@@ -241,14 +259,17 @@ describe("live IPC", () => {
   });
 
   test("a relative folder never reaches add_task", async () => {
-    // The button guards this, but the boundary must hold on its own.
     ipc.tasks = [{ ...ipc.tasks[0], folder: "code/ledger" }];
     await renderApp();
     await user().click(screen.getByLabelText("Queue"));
     await user().type(screen.getByLabelText("New task"), "Nope");
-    await user().click(screen.getByLabelText("Add to queue"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("absolute path");
+    // The composer refuses to arm, and says why rather than failing silently.
+    expect(
+      await screen.findByText("folder must be an absolute path"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Add to queue")).toBeDisabled();
+    await user().click(screen.getByLabelText("Add to queue"));
     expect(ipc.calls.some((c) => c.cmd === "add_task")).toBe(false);
   });
 
@@ -381,8 +402,7 @@ describe("preferences", () => {
     const user = userEvent.setup();
     await renderApp();
 
-    await user.click(screen.getByLabelText("Settings"));
-    await user.click(screen.getByText("Look & Feel"));
+    await openLook(user);
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect(document.documentElement).toHaveAttribute(
@@ -398,8 +418,7 @@ describe("preferences", () => {
     const user = userEvent.setup();
     await renderApp();
 
-    await user.click(screen.getByLabelText("Settings"));
-    await user.click(screen.getByText("Look & Feel"));
+    await openLook(user);
     await user.click(screen.getByLabelText("Always on top"));
 
     expect(screen.getByLabelText("Always on top")).toHaveAttribute(
@@ -416,8 +435,7 @@ describe("preferences", () => {
     await renderApp();
     expect(document.documentElement).toHaveAttribute("data-mode", "light");
 
-    await user.click(screen.getByLabelText("Settings"));
-    await user.click(screen.getByText("Look & Feel"));
+    await openLook(user);
     await user.click(screen.getByRole("button", { name: "Dark" }));
     expect(document.documentElement).toHaveAttribute("data-mode", "dark");
 
@@ -444,8 +462,7 @@ describe("preferences", () => {
     const user = userEvent.setup();
     await renderApp();
 
-    await user.click(screen.getByLabelText("Settings"));
-    await user.click(screen.getByText("Look & Feel"));
+    await openLook(user);
     await user.click(screen.getByLabelText("teal"));
 
     expect(document.documentElement).toHaveAttribute("data-accent", "teal");
@@ -455,58 +472,369 @@ describe("preferences", () => {
 describe("pro mode", () => {
   afterEach(() => {
     window.localStorage.clear();
+    for (const name of [
+      "data-density",
+      "data-font",
+      "data-radius",
+      "data-bar",
+      "data-bars-only",
+      "data-mode",
+    ]) {
+      document.documentElement.removeAttribute(name);
+    }
+    document.documentElement.removeAttribute("style");
   });
 
-  const openSettings = async () => {
+  test("off by default, with no settings tab and a switch that reads off", async () => {
+    await renderApp();
+    const sw = screen.getByLabelText("Pro mode");
+
+    expect(sw).toHaveAttribute("aria-pressed", "false");
+    // shaped like every other toggle in the app, not like a badge
+    expect(sw.querySelector(".swtrack")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Settings")).not.toBeInTheDocument();
+  });
+
+  test("turning it on unlocks settings and remembers the choice", async () => {
     const u = userEvent.setup();
     await renderApp();
-    await u.click(screen.getByLabelText("Settings"));
-    return u;
-  };
-
-  test("off by default, and settings then look exactly as they shipped", async () => {
-    await openSettings();
-
-    expect(screen.getByLabelText("Pro mode")).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    expect(screen.getByText("Look & Feel")).toBeInTheDocument();
-    expect(screen.queryByText("Tasks")).not.toBeInTheDocument();
-    expect(screen.queryByText("LLMs")).not.toBeInTheDocument();
-  });
-
-  test("turning it on unlocks the three groups and remembers the choice", async () => {
-    const u = await openSettings();
     await u.click(screen.getByLabelText("Pro mode"));
 
     expect(screen.getByLabelText("Pro mode")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
+    await u.click(screen.getByLabelText("Settings"));
     for (const group of ["Colour & Theme", "Tasks", "LLMs"]) {
       expect(screen.getByText(group)).toBeInTheDocument();
     }
-    expect(screen.queryByText("Look & Feel")).not.toBeInTheDocument();
     expect(window.localStorage.getItem("idle.preferences")).toContain(
       '"pro":true',
     );
   });
 
-  test("the pro switch is reachable from every screen", async () => {
+  test("leaving pro while on settings does not strand the user there", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openSettings(u);
+    expect(screen.getByText("Colour & Theme")).toBeInTheDocument();
+
+    await u.click(screen.getByLabelText("Pro mode"));
+
+    // back on the meters, not on a screen with no tab to return from
+    expect(screen.getByText("Claude", { selector: ".mname" })).toBeVisible();
+    expect(screen.queryByText("Colour & Theme")).not.toBeInTheDocument();
+  });
+
+  test("the switch is reachable from every screen", async () => {
     const u = userEvent.setup();
     await renderApp();
 
-    for (const tab of ["Queue", "Settings", "Meters"]) {
+    for (const tab of ["Queue", "Meters"]) {
       await u.click(screen.getByLabelText(tab));
       expect(screen.getByLabelText("Pro mode")).toBeInTheDocument();
     }
   });
+});
+
+describe("pro: colour & theme", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    for (const name of [
+      "data-density",
+      "data-font",
+      "data-radius",
+      "data-bar",
+      "data-bars-only",
+      "data-mode",
+    ]) {
+      document.documentElement.removeAttribute(name);
+    }
+    document.documentElement.removeAttribute("style");
+  });
+
+  const root = () => document.documentElement;
+
+  test("shape options stamp the root, and leaving pro takes them all off", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLook(u);
+
+    await u.click(screen.getByRole("button", { name: "Tiny" }));
+    await u.click(screen.getByRole("button", { name: "Mono" }));
+    await u.click(screen.getByRole("button", { name: "Sharp" }));
+    await u.click(screen.getByRole("button", { name: "Ticks" }));
+
+    expect(root()).toHaveAttribute("data-density", "tiny");
+    expect(root()).toHaveAttribute("data-font", "mono");
+    expect(root()).toHaveAttribute("data-radius", "sharp");
+    expect(root()).toHaveAttribute("data-bar", "ticks");
+
+    // the shipped look is the absence of these, so they must actually go
+    await u.click(screen.getByLabelText("Pro mode"));
+    expect(root()).not.toHaveAttribute("data-density");
+    expect(root()).not.toHaveAttribute("data-font");
+    expect(root()).not.toHaveAttribute("data-radius");
+    expect(root()).not.toHaveAttribute("data-bar");
+
+    // ...and come back when it does, without being re-picked
+    await u.click(screen.getByLabelText("Pro mode"));
+    expect(root()).toHaveAttribute("data-density", "tiny");
+  });
+
+  test("the opacity slider drives the widget surface", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLook(u);
+
+    const slider = screen.getByLabelText("Opacity");
+    fireEvent.change(slider, { target: { value: "50" } });
+
+    expect(root().style.getPropertyValue("--w-opacity")).toBe("50%");
+    expect(screen.getByText("50%")).toBeInTheDocument();
+  });
+
+  test("a custom accent overrides the presets and can be given back", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLook(u);
+
+    fireEvent.change(screen.getByLabelText("Custom accent"), {
+      target: { value: "#ff8800" },
+    });
+    expect(root().style.getPropertyValue("--accent")).toBe("#ff8800");
+    expect(screen.getByLabelText("blue")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    await u.click(screen.getByLabelText("Reset accent"));
+    expect(root().style.getPropertyValue("--accent")).toBe("");
+  });
+
+  test("auto dark beats the mode segment, and only while pro is on", async () => {
+    const u = userEvent.setup();
+    vi.setSystemTime(new Date(2026, 8, 1, 22, 0, 0));
+    try {
+      await renderApp();
+      await openLook(u);
+      expect(root()).toHaveAttribute("data-mode", "light");
+
+      await u.click(screen.getByLabelText("Auto dark"));
+      expect(root()).toHaveAttribute("data-mode", "dark");
+
+      await u.click(screen.getByLabelText("Pro mode"));
+      expect(root()).toHaveAttribute("data-mode", "light");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the footer and the names can be dropped from the rows", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLook(u);
+
+    await u.click(screen.getByLabelText("Meter footer"));
+    await u.click(screen.getByLabelText("Meters"));
+    expect(document.querySelector(".mfoot")).not.toBeInTheDocument();
+
+    await openSettingsAgain(u);
+    await u.click(screen.getByLabelText("Bars only"));
+    expect(root()).toHaveAttribute("data-bars-only", "true");
+  });
+
+  test("a size preset is a real window call", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLook(u);
+
+    await u.click(screen.getByRole("button", { name: "Tall" }));
+
+    expect(ipc.window.size.at(-1)).toEqual([384, 600]);
+  });
+});
+
+describe("pro: tasks", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  const openQueue = async (u: ReturnType<typeof userEvent.setup>) => {
+    await u.click(screen.getByLabelText("Pro mode"));
+    await u.click(screen.getByLabelText("Queue"));
+  };
+
+  test("filter chips narrow the list and say so when nothing matches", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.click(screen.getByRole("button", { name: "Claude" }));
+    expect(
+      screen.getByText("Write tests for the CSV parser"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Add retry to the sync worker"),
+    ).not.toBeInTheDocument();
+
+    // a second axis can rule everything out, and that is not an error
+    await u.click(screen.getByRole("button", { name: "queued" }));
+    await u.click(screen.getByRole("button", { name: "running" }));
+    expect(screen.getByText("Nothing matches those filters.")).toBeVisible();
+  });
+
+  test("history is off until asked for, and the header count ignores it", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openSettings(u);
+    await u.click(screen.getByText("Tasks"));
+    await u.click(screen.getByLabelText("Show history"));
+    await u.click(screen.getByLabelText("Queue"));
+
+    expect(
+      screen.getByText("Fix flaky snapshot on Windows CI"),
+    ).toBeInTheDocument();
+    // done work is visible but it is not queued work
+    expect(screen.getByText(/3 queued/i)).toBeInTheDocument();
+  });
+
+  test("a per-task size change goes through update_task", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.selectOptions(
+      screen.getByLabelText("Size for Add retry to the sync worker"),
+      "l",
+    );
+
+    expect(ipc.calls.find((c) => c.cmd === "update_task")?.args).toEqual({
+      id: "t1",
+      size: "l",
+    });
+  });
+
+  test("bulk selection reassigns the engine in one action", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.click(screen.getByLabelText("Select Add retry to the sync worker"));
+    await u.click(
+      screen.getByLabelText("Select Draft the migration plan for v3"),
+    );
+    expect(screen.getByText("2 selected")).toBeVisible();
+
+    await u.selectOptions(screen.getByLabelText("Engine for selected"), "grok");
+
+    const updates = ipc.calls.filter((c) => c.cmd === "update_task");
+    expect(updates).toHaveLength(2);
+    expect(updates.map((c) => c.args.id).sort()).toEqual(["t1", "t3"]);
+    expect(screen.queryByText("2 selected")).not.toBeInTheDocument();
+  });
+
+  test("bulk remove deletes every selected task and no others", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.click(screen.getByLabelText("Select Add retry to the sync worker"));
+    await u.click(screen.getByLabelText("Remove selected"));
+
+    expect(ipc.calls.filter((c) => c.cmd === "delete_task")).toHaveLength(1);
+    expect(
+      screen.queryByText("Add retry to the sync worker"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Write tests for the CSV parser"),
+    ).toBeInTheDocument();
+  });
+
+  test("manual sort only exists in pro, and a drag reorders and persists", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await u.click(screen.getByLabelText("Queue"));
+    expect(
+      screen.queryByRole("button", { name: "Manual" }),
+    ).not.toBeInTheDocument();
+
+    await u.click(screen.getByLabelText("Pro mode"));
+    await u.click(screen.getByRole("button", { name: "Manual" }));
+
+    const rows = () =>
+      [...document.querySelectorAll(".task b")].map((n) => n.textContent);
+    expect(rows()[0]).toBe("Add retry to the sync worker");
+
+    const third = document.querySelectorAll(".task")[2];
+    const first = document.querySelectorAll(".task")[0];
+    fireEvent.dragStart(third);
+    fireEvent.dragOver(first);
+    fireEvent.drop(first);
+
+    expect(rows()[0]).toBe("Draft the migration plan for v3");
+    expect(window.localStorage.getItem("idle.preferences")).toContain(
+      '"order":["t3"',
+    );
+  });
+
+  test("a prompt can be saved, reused and forgotten", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.type(screen.getByLabelText("New task"), "Rotate the API keys");
+    await u.click(screen.getByLabelText("Save as template"));
+    await u.click(screen.getByLabelText("Add to queue"));
+
+    // the box is empty again, but the template is not
+    expect(screen.getByLabelText("New task")).toHaveValue("");
+    await u.click(screen.getByLabelText("Use template Rotate the API keys"));
+    expect(screen.getByLabelText("New task")).toHaveValue(
+      "Rotate the API keys",
+    );
+
+    await u.click(screen.getByLabelText("Forget template Rotate the API keys"));
+    expect(
+      screen.queryByLabelText("Use template Rotate the API keys"),
+    ).not.toBeInTheDocument();
+  });
+
+  test("a per-task folder overrides the inherited one", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openQueue(u);
+
+    await u.click(screen.getByLabelText("Change folder"));
+    const field = screen.getByLabelText("Task folder");
+    await u.clear(field);
+    await u.type(field, "/Users/you/other");
+    await u.type(screen.getByLabelText("New task"), "Elsewhere");
+    await u.click(screen.getByLabelText("Add to queue"));
+
+    expect(ipc.calls.find((c) => c.cmd === "add_task")?.args).toEqual({
+      prompt: "Elsewhere",
+      folder: "/Users/you/other",
+      size: "m",
+      engine: { type: "auto" },
+    });
+  });
+});
+
+describe("pro: llms", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  const openLlms = async (u: ReturnType<typeof userEvent.setup>) => {
+    await openSettings(u);
+    await u.click(screen.getByText("LLMs"));
+  };
 
   test("switching an engine off drops its row; leaving pro brings it back", async () => {
-    const u = await openSettings();
-    await u.click(screen.getByLabelText("Pro mode"));
-    await u.click(screen.getByText("LLMs"));
+    const u = userEvent.setup();
+    await renderApp();
+    await openLlms(u);
     await u.click(screen.getByLabelText("Grok"));
 
     await u.click(screen.getByLabelText("Meters"));
@@ -528,31 +856,87 @@ describe("pro mode", () => {
     );
     expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
 
-    await u.click(screen.getByLabelText("Pro mode"));
-    await u.click(screen.getByLabelText("Settings"));
-    await u.click(screen.getByText("LLMs"));
+    await openLlms(u);
     await u.click(screen.getByLabelText("Grok"));
     await u.click(screen.getByLabelText("Meters"));
 
     expect(screen.getByText(/paused/i)).toBeInTheDocument();
   });
 
-  test("the default sort set in pro settings is what the queue opens on", async () => {
-    const u = await openSettings();
+  test("reordering moves the row, and only while pro is on", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLlms(u);
+
+    await u.click(screen.getByLabelText("Move Grok up"));
+    await u.click(screen.getByLabelText("Move Grok up"));
+    await u.click(screen.getByLabelText("Move Grok up"));
+    await u.click(screen.getByLabelText("Meters"));
+
+    const names = () =>
+      [...document.querySelectorAll(".mname")].map((n) => n.textContent);
+    expect(names()[0]).toBe("Grok");
+
     await u.click(screen.getByLabelText("Pro mode"));
-    await u.click(screen.getByText("Tasks"));
+    expect(names()[0]).toBe("Claude");
+  });
 
-    await u.click(
-      within(screen.getByRole("group", { name: "Default sort" })).getByRole(
-        "button",
-        { name: "Engine" },
-      ),
-    );
+  test("moving the top engine up is not offered", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLlms(u);
 
-    await u.click(screen.getByLabelText("Queue"));
-    expect(document.querySelector(".task b")?.textContent).toBe(
-      "Write tests for the CSV parser",
+    expect(screen.getByLabelText("Move Claude up")).toBeDisabled();
+    expect(screen.getByLabelText("Move Grok down")).toBeDisabled();
+  });
+
+  test("the thresholds decide what a row calls itself", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+
+    // Claude sits at 74% used, which is "tight" at the shipped 70
+    expect(within(row("Claude")).getByText("tight")).toBeInTheDocument();
+
+    await openLlms(u);
+    fireEvent.change(screen.getByLabelText("Tight at"), {
+      target: { value: "80" },
+    });
+    await u.click(screen.getByLabelText("Meters"));
+    expect(within(row("Claude")).getByText("ok")).toBeInTheDocument();
+
+    // ...and the shipped thresholds come back with pro off
+    await u.click(screen.getByLabelText("Pro mode"));
+    expect(within(row("Claude")).getByText("tight")).toBeInTheDocument();
+  });
+
+  test("near limit cannot be dragged below tight", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLlms(u);
+
+    fireEvent.change(screen.getByLabelText("Near limit at"), {
+      target: { value: "40" },
+    });
+
+    const tight = screen.getByLabelText("Tight at") as HTMLInputElement;
+    const near = screen.getByLabelText("Near limit at") as HTMLInputElement;
+    expect(Number(near.value)).toBeGreaterThan(Number(tight.value));
+  });
+
+  test("a default window opens the row on it without a click", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await openLlms(u);
+
+    await u.selectOptions(
+      screen.getByLabelText("Default window for Claude"),
+      "weekly",
     );
+    await u.click(screen.getByLabelText("Meters"));
+
+    expect(
+      within(row("Claude")).getByRole("button", { name: "7d" }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 });
 

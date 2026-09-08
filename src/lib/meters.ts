@@ -30,11 +30,17 @@ export function usedPct(meter: MeterState): number | null {
   return null;
 }
 
-export function levelFor(pct: number | null): MeterLevel {
+/** The shipped thresholds. Pro mode lets the user move them. */
+export const DEFAULT_LEVELS = { tight: 70, near: 88 } as const;
+
+export function levelFor(
+  pct: number | null,
+  levels: { tight: number; near: number } = DEFAULT_LEVELS,
+): MeterLevel {
   if (pct === null) return "unknown";
   if (pct >= 100) return "hit";
-  if (pct >= 88) return "near";
-  if (pct >= 70) return "tight";
+  if (pct >= levels.near) return "near";
+  if (pct >= levels.tight) return "tight";
   return "ok";
 }
 

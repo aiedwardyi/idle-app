@@ -7,6 +7,10 @@ type Props = {
   selected: Partial<Record<EngineId, LimitWindowKind>>;
   running: Partial<Record<EngineId, boolean>>;
   now: Date;
+  levels: { tight: number; near: number };
+  showFooter: boolean;
+  /** The window each engine opens on, until the user picks another. */
+  defaultWindow: Partial<Record<EngineId, LimitWindowKind>>;
   onSelectWindow: (engine: EngineId, kind: LimitWindowKind) => void;
   onToggleRun: (engine: EngineId) => void;
 };
@@ -16,6 +20,9 @@ export function Widget({
   selected,
   running,
   now,
+  levels,
+  showFooter,
+  defaultWindow,
   onSelectWindow,
   onToggleRun,
 }: Props) {
@@ -25,9 +32,15 @@ export function Widget({
         <MeterRow
           key={group.engine}
           group={group}
-          selected={selected[group.engine] ?? group.windows[0].window}
+          selected={
+            selected[group.engine] ??
+            defaultWindow[group.engine] ??
+            group.windows[0].window
+          }
           running={running[group.engine] ?? false}
           now={now}
+          levels={levels}
+          showFooter={showFooter}
           onSelectWindow={(kind) => onSelectWindow(group.engine, kind)}
           onToggleRun={() => onToggleRun(group.engine)}
         />

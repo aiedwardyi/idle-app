@@ -2,9 +2,9 @@ import { Icon } from "./Icon";
 import { SCREEN_TITLE, type Screen } from "../lib/screens";
 
 /**
- * Three tabs, always visible, active one marked. The previous version toggled
- * the same icon to go back, which works but tells the user nothing — there was
- * no visible way back to the meters.
+ * Meters and queue are the app. Settings only exists in pro mode: with
+ * nothing to configure there is nothing to open, and dropping the tab keeps
+ * the default view at the three controls CLAUDE.md asks for.
  */
 const TABS: { screen: Screen; icon: "meters" | "queue" | "settings" }[] = [
   { screen: "widget", icon: "meters" },
@@ -29,24 +29,25 @@ export function TitleStrip({
   onOpen,
   onTogglePro,
 }: Props) {
+  const tabs = pro ? TABS : TABS.filter((tab) => tab.screen !== "settings");
+
   return (
     <div className="strip" data-tauri-drag-region>
-      {/* Left, away from the tab cluster on the right, because it is not a
-          fourth destination: it changes what the other three contain. Its own
-          state is the one thing it has to make obvious, so it carries a word
-          rather than an icon. */}
+      {/* Left, away from the tab cluster, because it is not a fourth
+          destination: it changes what the other tabs contain. Shaped like
+          every other toggle in the app so it reads as on/off rather than as
+          a badge. */}
       <button
         type="button"
-        className="propill"
+        className="proswitch"
         aria-pressed={pro}
         aria-label="Pro mode"
         title={
-          pro
-            ? "Pro mode on — extra settings unlocked"
-            : "Pro mode off — simple view"
+          pro ? "Pro mode on — settings unlocked" : "Pro mode off — simple view"
         }
         onClick={onTogglePro}
       >
+        <span className="swtrack" aria-hidden="true" />
         Pro
       </button>
 
@@ -55,7 +56,7 @@ export function TitleStrip({
         <span>{status}</span>
       </span>
       <span className="actions">
-        {TABS.map((tab) => (
+        {tabs.map((tab) => (
           <button
             key={tab.screen}
             type="button"

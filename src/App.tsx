@@ -1,28 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
-import type { EngineId, LimitWindowKind } from "./types";
+import type { EngineId, LimitWindowKind, TaskSize } from "./types";
 import { useTasks } from "./hooks/useTasks";
 import { useMeters } from "./hooks/useMeters";
 import { defaultFolder } from "./lib/folder";
 import { groupMeters, levelFor, usedPct } from "./lib/meters";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
 import {
+  DEFAULT_PREFERENCES,
+  WINDOW_SIZE_PX,
+  effectiveMode,
   loadPreferences,
   savePreferences,
-  type Accent,
-  type Mode,
-  type Theme,
+  type Preferences,
 } from "./lib/preferences";
-import type { Sort } from "./lib/sort";
-import { applyAlwaysOnTop } from "./lib/window";
+import { applyAlwaysOnTop, applySize } from "./lib/window";
 import { loadPriorities, savePriorities, type Priority } from "./lib/priority";
 import { TitleStrip } from "./components/TitleStrip";
 import { Widget } from "./screens/Widget";
 import { Tasks } from "./screens/Tasks";
+import { NO_FILTERS, type Filters } from "./lib/filters";
 import { Composer } from "./components/Composer";
 import { Settings } from "./screens/Settings";
 
 function App() {
-  const [screen, setScreen] = useState<Screen>("widget");
+  const [requested, setScreen] = useState<Screen>("widget");
   const [selected, setSelected] = useState<
     Partial<Record<EngineId, LimitWindowKind>>
   >({});
@@ -33,45 +34,32 @@ function App() {
   const [priorities, setPriorities] = useState(loadPriorities);
 
   // Tasks and meters come from the store now; nothing here is invented.
-  const { tasks, error, add, setEngine, remove } = useTasks();
+  const {
+    tasks,
+    error,
+    add,
+    setEngine,
+    setSize,
+    setEngineMany,
+    remove,
+    removeMany,
+  } = useTasks();
   const { meters, error: meterError } = useMeters();
 
   useEffect(() => {
     savePriorities(priorities);
   }, [priorities]);
   const [preferences, setPreferences] = useState(loadPreferences);
+  const pro = preferences.pro;
 
-  // Theme and accent are stamped on the root element so the token blocks in
-  // index.css can key off them, and remembered across launches.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute("data-widget-theme", preferences.theme);
-    root.setAttribute("data-accent", preferences.accent);
-    // "system" means stamp nothing and let prefers-color-scheme decide.
-    if (preferences.mode === "system") root.removeAttribute("data-mode");
-    else root.setAttribute("data-mode", preferences.mode);
-    savePreferences(preferences);
-  }, [preferences]);
+  const update = (patch: Partial<Preferences>) =>
+    setPreferences((current) => ({ ...current, ...patch }));
 
-  // Always on top is a real window call, applied on load as well as on change
-  // so the setting survives a restart.
-  useEffect(() => {
-    void applyAlwaysOnTop(preferences.alwaysOnTop);
-  }, [preferences.alwaysOnTop]);
-
-  const all = useMemo(() => groupMeters(meters ?? []), [meters]);
-
-  // Switching an engine off only applies while pro is on: turning pro off is
-  // meant to give back the default app, not a version of it with rows missing.
-  const groups = useMemo(
-    () =>
-      preferences.pro
-        ? all.filter(
-            (group) => !preferences.hiddenEngines.includes(group.engine),
-          )
-        : all,
-    [all, preferences.pro, preferences.hiddenEngines],
-  );
+  // Leaving pro mode closes the settings screen with it: the tab is gone, so
+  // staying there would strand the user with no way back. Derived rather than
+  // corrected in an effect, so there is never a frame showing the dead screen.
+  const screen: Screen =
+    !pro && requested === "settings" ? "widget" : requested;
 
   // The reset countdowns are relative to now, so the clock has to advance on
   // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
@@ -82,23 +70,120 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  // Auto dark resolves against the same ticking clock, so 7pm arrives on its
+  // own rather than at the next click.
+  const mode = effectiveMode(preferences, now);
+
+  // Theme, accent and every pro shape option are stamped on the root element
+  // so the token blocks and the pro layer in index.css can key off them.
+  useEffect(() => {
+    const root = document.documentElement;
+    const p = preferences;
+    root.setAttribute("data-widget-theme", p.theme);
+    root.setAttribute("data-accent", p.accent);
+    // "system" means stamp nothing and let prefers-color-scheme decide.
+    if (mode === "system") root.removeAttribute("data-mode");
+    else root.setAttribute("data-mode", mode);
+
+    // Pro-only presentation. Off means no attribute at all, so none of the
+    // pro selectors match and the shipped look is what renders.
+    const shape: Record<string, string | null> = {
+      "data-density": p.pro ? p.density : null,
+      "data-font": p.pro ? p.font : null,
+      "data-radius": p.pro ? p.radius : null,
+      "data-bar": p.pro ? p.bar : null,
+      "data-bars-only": p.pro && p.barsOnly ? "true" : null,
+    };
+    for (const [name, value] of Object.entries(shape)) {
+      if (value === null) root.removeAttribute(name);
+      else root.setAttribute(name, value);
+    }
+
+    // Opacity and a custom accent are values, not variants, so they ride on
+    // inline custom properties. The hex is validated on load.
+    if (p.pro && p.opacity !== DEFAULT_PREFERENCES.opacity) {
+      root.style.setProperty("--w-opacity", `${p.opacity}%`);
+    } else root.style.removeProperty("--w-opacity");
+
+    if (p.pro && p.accentCustom !== null) {
+      root.style.setProperty("--accent", p.accentCustom);
+    } else root.style.removeProperty("--accent");
+
+    savePreferences(p);
+  }, [preferences, mode]);
+
+  // Always on top and the size preset are real window calls, applied on load
+  // as well as on change so the settings survive a restart.
+  useEffect(() => {
+    void applyAlwaysOnTop(preferences.alwaysOnTop);
+  }, [preferences.alwaysOnTop]);
+
+  useEffect(() => {
+    const { w, h } = WINDOW_SIZE_PX[preferences.windowSize];
+    void applySize(w, h);
+  }, [preferences.windowSize]);
+
+  const all = useMemo(() => groupMeters(meters ?? []), [meters]);
+
+  // Hiding and reordering engines only apply while pro is on: turning pro off
+  // is meant to give back the default app, not a version of it with rows
+  // missing or shuffled.
+  const groups = useMemo(() => {
+    if (!pro) return all;
+    const rank = new Map(
+      preferences.engineOrder.map((engine, index) => [engine, index]),
+    );
+    return all
+      .filter((group) => !preferences.hiddenEngines.includes(group.engine))
+      .sort((a, b) => (rank.get(a.engine) ?? 0) - (rank.get(b.engine) ?? 0));
+  }, [all, pro, preferences.engineOrder, preferences.hiddenEngines]);
+
+  const levels = useMemo(
+    () =>
+      pro
+        ? { tight: preferences.tight, near: preferences.near }
+        : { tight: DEFAULT_PREFERENCES.tight, near: DEFAULT_PREFERENCES.near },
+    [pro, preferences.tight, preferences.near],
+  );
+
+  /** The windows each engine reports, for the default-window picker. */
+  const windows = useMemo(
+    () =>
+      Object.fromEntries(
+        all.map((group) => [group.engine, group.windows.map((w) => w.window)]),
+      ) as Partial<Record<EngineId, LimitWindowKind[]>>,
+    [all],
+  );
+
   // Finished, failed and discarded tasks are history, not queue. The header
   // count and the queue screen read from the same list so they cannot disagree.
-  const active = useMemo(
+  const queue = useMemo(
+    () =>
+      (tasks ?? []).filter(
+        (task) =>
+          task.status === "queued" ||
+          task.status === "running" ||
+          (pro && preferences.showHistory),
+      ),
+    [tasks, pro, preferences.showHistory],
+  );
+  const queued = useMemo(
     () =>
       (tasks ?? []).filter(
         (task) => task.status === "queued" || task.status === "running",
-      ),
+      ).length,
     [tasks],
   );
-  const queued = active.length;
 
   const live = groups.filter((group) => {
     if (!running[group.engine]) return false;
-    const window = selected[group.engine] ?? group.windows[0].window;
+    const window =
+      selected[group.engine] ??
+      preferences.defaultWindow[group.engine] ??
+      group.windows[0].window;
     const meter =
       group.windows.find((w) => w.window === window) ?? group.windows[0];
-    return levelFor(usedPct(meter)) !== "hit";
+    return levelFor(usedPct(meter), levels) !== "hit";
   }).length;
 
   const problem = error ?? meterError;
@@ -113,8 +198,13 @@ function App() {
   // which the contract forbids. The composer disables send until it settles.
   const [folder, setFolder] = useState<string | undefined>(undefined);
   useEffect(() => {
-    void defaultFolder(active[active.length - 1]?.folder).then(setFolder);
-  }, [active]);
+    const newest = queue.filter(
+      (task) => task.status === "queued" || task.status === "running",
+    );
+    void defaultFolder(newest[newest.length - 1]?.folder).then(setFolder);
+  }, [queue]);
+
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
 
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
@@ -128,11 +218,9 @@ function App() {
         title={SCREEN_HEADING[screen]}
         status={status}
         screen={screen}
-        pro={preferences.pro}
+        pro={pro}
         onOpen={setScreen}
-        onTogglePro={() =>
-          setPreferences((current) => ({ ...current, pro: !current.pro }))
-        }
+        onTogglePro={() => update({ pro: !pro })}
       />
 
       <div className="body">
@@ -148,55 +236,40 @@ function App() {
             selected={selected}
             running={running}
             now={now}
+            levels={levels}
+            showFooter={!pro || preferences.showFooter}
+            defaultWindow={pro ? preferences.defaultWindow : {}}
             onSelectWindow={selectWindow}
             onToggleRun={toggleRun}
           />
         )}
         {screen === "tasks" && (
           <Tasks
-            tasks={active}
+            tasks={queue}
             loading={tasks === null}
             priorities={priorities}
             sort={preferences.sort}
+            pro={pro}
+            order={preferences.order}
+            filters={pro ? filters : NO_FILTERS}
+            onFilters={setFilters}
             onEngine={(id, engine) => void setEngine(id, engine)}
+            onSize={(id, size: TaskSize) => void setSize(id, size)}
             onRemove={(id) => void remove(id)}
+            onRemoveMany={(ids) => void removeMany(ids)}
+            onEngineMany={(ids, engine) => void setEngineMany(ids, engine)}
+            onReorder={(order) => update({ order })}
             onPriority={(id, priority: Priority) =>
               setPriorities((current) => ({ ...current, [id]: priority }))
             }
-            onSort={(sort: Sort) =>
-              setPreferences((current) => ({ ...current, sort }))
-            }
+            onSort={(sort) => update({ sort })}
           />
         )}
-        {screen === "settings" && (
+        {screen === "settings" && pro && (
           <Settings
             preferences={preferences}
-            onTheme={(theme: Theme) =>
-              setPreferences((current) => ({ ...current, theme }))
-            }
-            onMode={(mode: Mode) =>
-              setPreferences((current) => ({ ...current, mode }))
-            }
-            onAccent={(accent: Accent) =>
-              setPreferences((current) => ({ ...current, accent }))
-            }
-            onToggleAlwaysOnTop={() =>
-              setPreferences((current) => ({
-                ...current,
-                alwaysOnTop: !current.alwaysOnTop,
-              }))
-            }
-            onSort={(sort: Sort) =>
-              setPreferences((current) => ({ ...current, sort }))
-            }
-            onToggleEngine={(engine: EngineId) =>
-              setPreferences((current) => ({
-                ...current,
-                hiddenEngines: current.hiddenEngines.includes(engine)
-                  ? current.hiddenEngines.filter((id) => id !== engine)
-                  : [...current.hiddenEngines, engine],
-              }))
-            }
+            windows={windows}
+            onChange={update}
           />
         )}
       </div>
@@ -204,9 +277,23 @@ function App() {
       {screen === "tasks" && (
         <Composer
           folder={folder}
-          onSubmit={(prompt) => {
-            if (folder !== undefined) void add(prompt, folder);
-          }}
+          pro={pro}
+          templates={pro ? preferences.templates : []}
+          onSubmit={(prompt, target) => void add(prompt, target)}
+          onSaveTemplate={(prompt) =>
+            update({
+              templates: preferences.templates.includes(prompt)
+                ? preferences.templates
+                : [...preferences.templates, prompt],
+            })
+          }
+          onDeleteTemplate={(prompt) =>
+            update({
+              templates: preferences.templates.filter(
+                (saved) => saved !== prompt,
+              ),
+            })
+          }
         />
       )}
     </main>

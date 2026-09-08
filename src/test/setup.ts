@@ -1,11 +1,23 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, vi } from "vitest";
-import { addListener, handleInvoke, resetIpc } from "./ipc";
+import { addListener, handleInvoke, ipc, resetIpc } from "./ipc";
 
 // vitest runs without globals, so React Testing Library's own auto-cleanup
 // never registers. Without this, renders leak between tests in the same file.
 afterEach(cleanup);
+
+// Preferences persist by design, which between tests means one test's theme —
+// or its pro switch — silently becomes the next one's starting state. The
+// root element carries the same state as attributes, so it is reset with it.
+afterEach(() => {
+  window.localStorage.clear();
+  const root = document.documentElement;
+  for (const name of root.getAttributeNames()) {
+    if (name.startsWith("data-")) root.removeAttribute(name);
+  }
+  root.removeAttribute("style");
+});
 
 // The whole UI talks to Tauri through these three modules. Mocking them here
 // rather than per-file means every test exercises the real command names.
@@ -24,7 +36,22 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setAlwaysOnTop: () => Promise.resolve() }),
+  getCurrentWindow: () => ({
+    setAlwaysOnTop: (value: boolean) => {
+      ipc.window.alwaysOnTop.push(value);
+      return Promise.resolve();
+    },
+    setSize: (size: { width: number; height: number }) => {
+      ipc.window.size.push([size.width, size.height]);
+      return Promise.resolve();
+    },
+  }),
+  LogicalSize: class {
+    constructor(
+      public width: number,
+      public height: number,
+    ) {}
+  },
 }));
 
 beforeEach(resetIpc);

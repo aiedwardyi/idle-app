@@ -2,13 +2,14 @@ import type { Task } from "../types";
 import { ENGINE_ORDER } from "./engines";
 import { DEFAULT_PRIORITY, type Priority } from "./priority";
 
-export const SORTS = ["added", "priority", "engine"] as const;
+export const SORTS = ["added", "priority", "engine", "manual"] as const;
 export type Sort = (typeof SORTS)[number];
 
 export const SORT_LABEL: Record<Sort, string> = {
   added: "Added",
   priority: "Priority",
   engine: "Engine",
+  manual: "Manual",
 };
 
 const PRIORITY_RANK: Record<Priority, number> = { high: 0, normal: 1, low: 2 };
@@ -28,7 +29,13 @@ export function sortTasks(
   tasks: Task[],
   sort: Sort,
   priorities: Record<string, Priority>,
+  order: string[] = [],
 ): Task[] {
+  // Ids the user has never dragged are not in `order`; they sort after the
+  // ones that are, in arrival order, so a new task appears at the end.
+  const rank = new Map(order.map((id, index) => [id, index]));
+  const manual = (task: Task) => rank.get(task.id) ?? order.length;
+
   const keyed = tasks.map((task, index) => ({ task, index }));
 
   const compare: Record<Sort, (a: number, b: number) => number> = {
@@ -37,6 +44,7 @@ export function sortTasks(
       PRIORITY_RANK[priorities[keyed[a].task.id] ?? DEFAULT_PRIORITY] -
       PRIORITY_RANK[priorities[keyed[b].task.id] ?? DEFAULT_PRIORITY],
     engine: (a, b) => engineRank(keyed[a].task) - engineRank(keyed[b].task),
+    manual: (a, b) => manual(keyed[a].task) - manual(keyed[b].task),
   };
 
   return keyed

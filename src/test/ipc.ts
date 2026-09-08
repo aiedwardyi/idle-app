@@ -17,6 +17,8 @@ export const ipc = {
   listeners: {} as Record<string, Listener[]>,
   /** Monotonic: array length reuses an id after a delete. */
   nextId: 0,
+  /** Real window calls the app makes, so settings can be asserted end to end. */
+  window: { alwaysOnTop: [] as boolean[], size: [] as [number, number][] },
 };
 
 const task = (id: string, prompt: string, over: Partial<Task> = {}): Task => ({
@@ -69,6 +71,7 @@ export function resetIpc(): void {
   ipc.calls = [];
   ipc.listeners = {};
   ipc.nextId = ipc.tasks.length;
+  ipc.window = { alwaysOnTop: [], size: [] };
 }
 
 export function emit(event: string, payload: unknown): void {

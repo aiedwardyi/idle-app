@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { EngineChoice, Task } from "../types";
+import type { EngineChoice, Task, TaskSize } from "../types";
 import { addTask, deleteTask, listTasks, updateTask } from "../types/ipc";
 import { isAbsolute } from "../lib/folder";
 import { message } from "../lib/errors";
@@ -69,6 +69,53 @@ export function useTasks() {
     }
   }, []);
 
+  const setSize = useCallback(async (id: string, size: TaskSize) => {
+    try {
+      const updated = await updateTask({ id, size });
+      setTasks((current) =>
+        (current ?? []).map((task) => (task.id === id ? updated : task)),
+      );
+      setError(null);
+    } catch (caught) {
+      setError(message(caught));
+    }
+  }, []);
+
+  /**
+   * Bulk edits are still one command per task — the contract has no batch
+   * form — but they are one round of state and one error, so a half-applied
+   * batch cannot leave the list disagreeing with the store.
+   */
+  const setEngineMany = useCallback(
+    async (ids: string[], engine: EngineChoice) => {
+      try {
+        const updated = await Promise.all(
+          ids.map((id) => updateTask({ id, engine })),
+        );
+        const byId = new Map(updated.map((task) => [task.id, task]));
+        setTasks((current) =>
+          (current ?? []).map((task) => byId.get(task.id) ?? task),
+        );
+        setError(null);
+      } catch (caught) {
+        setError(message(caught));
+      }
+    },
+    [],
+  );
+
+  const removeMany = useCallback(async (ids: string[]) => {
+    try {
+      await Promise.all(ids.map((id) => deleteTask({ id })));
+      setTasks((current) =>
+        (current ?? []).filter((task) => !ids.includes(task.id)),
+      );
+      setError(null);
+    } catch (caught) {
+      setError(message(caught));
+    }
+  }, []);
+
   const remove = useCallback(async (id: string) => {
     try {
       await deleteTask({ id });
@@ -79,5 +126,14 @@ export function useTasks() {
     }
   }, []);
 
-  return { tasks, error, add, setEngine, remove };
+  return {
+    tasks,
+    error,
+    add,
+    setEngine,
+    setSize,
+    setEngineMany,
+    remove,
+    removeMany,
+  };
 }
