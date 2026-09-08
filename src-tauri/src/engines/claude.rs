@@ -824,6 +824,7 @@ mod tests {
         let junk = rate_limit_line(r#"{"status":"allowed","unifiedWindows":"nope"}"#);
         assert!(readings_of(&stream.map_line("r", &junk)).is_empty());
         let mixed = rate_limit_line(
+            // "daily" is not a recognised unifiedWindows key; skipped like "overage".
             r#"{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.2,"resetsAt":1788403800},"seven_day":"bad","daily":{"utilization":0.5,"resetsAt":1788403800}}}"#,
         );
         assert_eq!(
@@ -843,7 +844,21 @@ mod tests {
             r#"{"status":"rejected","resetsAt":1788403800,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":1788403800},"seven_day":{"utilization":0.38,"resetsAt":1788465600}}}"#,
         );
         let events = stream.map_line("r", &line);
-        assert_eq!(readings_of(&events).len(), 2);
+        assert_eq!(
+            readings_of(&events),
+            vec![
+                (
+                    LimitWindowKind::FiveHour,
+                    1.0,
+                    Some("2026-09-03T02:50:00Z".into())
+                ),
+                (
+                    LimitWindowKind::Weekly,
+                    0.38,
+                    Some("2026-09-03T20:00:00Z".into())
+                ),
+            ]
+        );
         let (closing, reason) = stream.finish("r", ExitReason::Failed);
         assert_eq!(reason, ExitReason::LimitHit);
         assert_eq!(

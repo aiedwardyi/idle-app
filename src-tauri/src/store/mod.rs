@@ -31,13 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, w
 UPDATE schema_version SET version = 2 WHERE id = 1;
 COMMIT;";
 
-/// v2 -> v3: meter_state records where its remaining_pct came from.
-const MIGRATE_V2_TO_V3: &str = "BEGIN;
-ALTER TABLE meter_state ADD COLUMN source TEXT NOT NULL DEFAULT 'none';
-ALTER TABLE meter_state ADD COLUMN observed_at TEXT;
-UPDATE schema_version SET version = 3 WHERE id = 1;
-COMMIT;";
-
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("sqlite: {0}")]
@@ -255,13 +248,16 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
         conn.execute_batch(MIGRATE_V1_TO_V2)?;
     }
     if version < 3 {
-        if table_has_column(conn, "meter_state", "source")?
-            && table_has_column(conn, "meter_state", "observed_at")?
-        {
-            conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
-        } else {
-            conn.execute_batch(MIGRATE_V2_TO_V3)?;
+        if !table_has_column(conn, "meter_state", "source")? {
+            conn.execute(
+                "ALTER TABLE meter_state ADD COLUMN source TEXT NOT NULL DEFAULT 'none'",
+                [],
+            )?;
         }
+        if !table_has_column(conn, "meter_state", "observed_at")? {
+            conn.execute("ALTER TABLE meter_state ADD COLUMN observed_at TEXT", [])?;
+        }
+        conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
     }
     Ok(())
 }
@@ -1043,6 +1039,67 @@ mod tests {
             .unwrap();
         assert_eq!(used_input, 10, "existing rows survive");
         assert_eq!(remaining, 26.4);
+        assert_eq!(source, "none");
+        assert_eq!(observed_at, None);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn v2_database_with_source_only_gains_observed_at() {
+        let path = std::env::temp_dir().join(format!(
+            "idle-migrate-v2-partial-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let v2 = rusqlite::Connection::open(&path).unwrap();
+        v2.execute_batch(
+            "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL);
+             INSERT INTO schema_version (id, version) VALUES (1, 2);
+             CREATE TABLE meter_state (
+                engine TEXT NOT NULL,
+                window TEXT NOT NULL,
+                used_input INTEGER NOT NULL,
+                used_output INTEGER NOT NULL,
+                used_cache INTEGER NOT NULL,
+                capacity_est INTEGER,
+                calibrated INTEGER NOT NULL,
+                remaining_pct REAL,
+                resets_at TEXT,
+                source TEXT NOT NULL DEFAULT 'none',
+                PRIMARY KEY (engine, window)
+             );
+             INSERT INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at, source)
+             VALUES ('claude', 'fiveHour', 10, 20, 30, 1000, 1, 26.4, '2026-09-04T05:00:00Z', 'none');",
+        )
+        .unwrap();
+        drop(v2);
+
+        let store = Store::open(&path).unwrap();
+        drop(store);
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let names: Vec<String> = conn
+            .prepare("PRAGMA table_info(meter_state)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(names.contains(&"source".to_string()));
+        assert!(names.contains(&"observed_at".to_string()));
+        let (used_input, source, observed_at): (i64, String, Option<String>) = conn
+            .query_row(
+                "SELECT used_input, source, observed_at FROM meter_state WHERE engine = 'claude' AND window = 'fiveHour'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(used_input, 10, "existing rows survive");
         assert_eq!(source, "none");
         assert_eq!(observed_at, None);
 
