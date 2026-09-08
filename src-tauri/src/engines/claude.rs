@@ -451,7 +451,7 @@ fn parse_unified_windows(windows: &Value) -> Vec<ParsedWindow> {
         if !stats.is_object() {
             continue;
         }
-        let Some(utilization) = stats["utilization"].as_f64() else {
+        let Some(utilization) = stats["utilization"].as_f64().filter(|u| *u >= 0.0) else {
             continue;
         };
         let Some(kind) = window_of_rate_limit_type(name) else {
@@ -833,6 +833,22 @@ mod tests {
                 LimitWindowKind::FiveHour,
                 0.2,
                 Some("2026-09-03T02:50:00Z".into())
+            )]
+        );
+    }
+
+    #[test]
+    fn negative_utilization_is_skipped_and_sibling_still_emits() {
+        let mut stream = ClaudeStream::default();
+        let line = rate_limit_line(
+            r#"{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":-0.1,"resetsAt":1788403800},"seven_day":{"utilization":0.38,"resetsAt":1788465600}}}"#,
+        );
+        assert_eq!(
+            readings_of(&stream.map_line("r", &line)),
+            vec![(
+                LimitWindowKind::Weekly,
+                0.38,
+                Some("2026-09-03T20:00:00Z".into())
             )]
         );
     }

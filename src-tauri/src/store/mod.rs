@@ -263,7 +263,11 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
 }
 
 /// Callers must pass hardcoded table-name literals only. PRAGMA takes no bind parameters.
-fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, StoreError> {
+fn table_has_column(
+    conn: &Connection,
+    table: &'static str,
+    column: &'static str,
+) -> Result<bool, StoreError> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
