@@ -416,6 +416,7 @@ fn fold_run_event(
     }
     let before = load_engine_meters(conn, engine)?;
     let mut changed = Vec::new();
+    // LimitHit still refresh-rolls other windows here; retain+reload below swaps in write_limit_hit's row.
     for row in &before {
         let next = apply(row.clone(), engine, event, now);
         if next != *row {

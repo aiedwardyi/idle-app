@@ -100,10 +100,12 @@ fn apply_event(row: MeterState, engine: EngineId, event: &RunEvent, now: &str) -
             // Vendor rows only take a deadline from the vendor; guessing one is forbidden.
             if row.resets_at.is_none() && row.source != MeterSource::Vendor {
                 if let Some(hours) = window_hours(engine, row.window) {
-                    return MeterState {
-                        resets_at: Some(add_hours(now, hours)),
-                        ..row
-                    };
+                    if let Some(resets_at) = add_hours(now, hours) {
+                        return MeterState {
+                            resets_at: Some(resets_at),
+                            ..row
+                        };
+                    }
                 }
             }
             row
@@ -126,11 +128,8 @@ fn window_hours(engine: EngineId, kind: LimitWindowKind) -> Option<u32> {
         .map(|w| w.hours)
 }
 
-fn add_hours(now: &str, hours: u32) -> String {
-    match unix_secs(now) {
-        Some(secs) => rfc3339_from_unix(secs.saturating_add(u64::from(hours) * 3600)),
-        None => now.to_string(),
-    }
+fn add_hours(now: &str, hours: u32) -> Option<String> {
+    unix_secs(now).map(|secs| rfc3339_from_unix(secs.saturating_add(u64::from(hours) * 3600)))
 }
 
 fn unix_secs(ts: &str) -> Option<u64> {
@@ -153,7 +152,7 @@ fn unix_secs(ts: &str) -> Option<u64> {
     let hour: u64 = ts[11..13].parse().ok()?;
     let min: u64 = ts[14..16].parse().ok()?;
     let sec: u64 = ts[17..19].parse().ok()?;
-    if !(1..=12).contains(&month) || day == 0 || hour > 23 || min > 59 || sec > 60 {
+    if !(1..=12).contains(&month) || day == 0 || day > 31 || hour > 23 || min > 59 || sec > 60 {
         return None;
     }
     let days = days_from_civil(year, month, day);
@@ -489,6 +488,14 @@ mod tests {
                 apply_claude(row.clone(), &reading(LimitWindowKind::FiveHour, util, None)),
                 row
             );
+        }
+    }
+
+    #[test]
+    fn started_rejects_invalid_day_and_leaves_the_row() {
+        let row = claude_5h();
+        for now in ["2026-09-99T00:00:00Z", "2026-09-32T00:00:00Z"] {
+            assert_eq!(apply(row.clone(), EngineId::Claude, &started(), now), row);
         }
     }
 
