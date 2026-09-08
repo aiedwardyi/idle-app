@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { EngineChoice, EngineId, LimitWindowKind, Task } from "./types";
-import { MOCK_METERS, MOCK_TASKS } from "./mocks";
+import type { EngineId, LimitWindowKind } from "./types";
+import { useTasks } from "./hooks/useTasks";
+import { useMeters } from "./hooks/useMeters";
+import { defaultFolder } from "./lib/folder";
 import { groupMeters, levelFor, usedPct } from "./lib/meters";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
 import {
@@ -28,12 +30,11 @@ function App() {
     {},
   );
 
-  // Engine picked per task. Local only: update_task has no handler yet, so
-  // this is the UI half of a call the runner PR will make real.
-  const [engineFor, setEngineFor] = useState<Record<string, EngineChoice>>({});
   const [priorities, setPriorities] = useState(loadPriorities);
-  // Session-only: tasks are app data and belong in the store, not here.
-  const [addedTasks, setAddedTasks] = useState<Task[]>([]);
+
+  // Tasks and meters come from the store now; nothing here is invented.
+  const { tasks, error, add, setEngine, remove } = useTasks();
+  const { meters, error: meterError } = useMeters();
 
   useEffect(() => {
     savePriorities(priorities);
@@ -58,7 +59,7 @@ function App() {
     void applyAlwaysOnTop(preferences.alwaysOnTop);
   }, [preferences.alwaysOnTop]);
 
-  const groups = useMemo(() => groupMeters(MOCK_METERS), []);
+  const groups = useMemo(() => groupMeters(meters ?? []), [meters]);
 
   // The reset countdowns are relative to now, so the clock has to advance on
   // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
@@ -73,13 +74,10 @@ function App() {
   // count and the queue screen read from the same list so they cannot disagree.
   const active = useMemo(
     () =>
-      [...MOCK_TASKS, ...addedTasks].filter(
+      (tasks ?? []).filter(
         (task) => task.status === "queued" || task.status === "running",
       ),
-    [addedTasks],
-  );
-  const queue = active.map((task) =>
-    engineFor[task.id] ? { ...task, engine: engineFor[task.id] } : task,
+    [tasks],
   );
   const queued = active.length;
 
@@ -91,31 +89,20 @@ function App() {
     return levelFor(usedPct(meter)) !== "hit";
   }).length;
 
+  const problem = error ?? meterError;
+
   const status =
     screen === "widget"
       ? `${queued} queued · ${live === 0 ? "paused" : `${live} ${live === 1 ? "engine" : "engines"} working`}`
       : `${queued} queued`;
 
-  // Absolute path, per the contract. Inheriting the newest task's folder beats
-  // inventing one; the composer says which folder it will use.
-  const folder = active[active.length - 1]?.folder ?? MOCK_TASKS[0].folder;
-
-  const addTask = (prompt: string) => {
-    const now = new Date().toISOString();
-    setAddedTasks((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        prompt,
-        folder,
-        size: "m",
-        engine: { type: "auto" },
-        status: "queued",
-        createdAt: now,
-        updatedAt: now,
-      },
-    ]);
-  };
+  // `undefined` until it resolves, never "": homeDir() is a round-trip, and an
+  // empty string here would let a fast typer submit a task with no folder,
+  // which the contract forbids. The composer disables send until it settles.
+  const [folder, setFolder] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    void defaultFolder(active[active.length - 1]?.folder).then(setFolder);
+  }, [active]);
 
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
@@ -133,6 +120,12 @@ function App() {
       />
 
       <div className="body">
+        {problem !== null && (
+          <p className="banner" role="alert">
+            {problem}
+          </p>
+        )}
+
         {screen === "widget" && (
           <Widget
             groups={groups}
@@ -145,12 +138,12 @@ function App() {
         )}
         {screen === "tasks" && (
           <Tasks
-            tasks={queue}
+            tasks={active}
+            loading={tasks === null}
             priorities={priorities}
             sort={preferences.sort}
-            onEngine={(id, engine) =>
-              setEngineFor((current) => ({ ...current, [id]: engine }))
-            }
+            onEngine={(id, engine) => void setEngine(id, engine)}
+            onRemove={(id) => void remove(id)}
             onPriority={(id, priority: Priority) =>
               setPriorities((current) => ({ ...current, [id]: priority }))
             }
@@ -181,7 +174,14 @@ function App() {
         )}
       </div>
 
-      {screen === "tasks" && <Composer folder={folder} onSubmit={addTask} />}
+      {screen === "tasks" && (
+        <Composer
+          folder={folder}
+          onSubmit={(prompt) => {
+            if (folder !== undefined) void add(prompt, folder);
+          }}
+        />
+      )}
     </main>
   );
 }

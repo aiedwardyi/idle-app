@@ -517,6 +517,35 @@ body {
       inset 0 0 0 2px var(--w-ink),
       inset 0 0 0 4px var(--w-surface);
   }
+  /* an error from a command, not a decoration — status colours only */
+  .banner {
+    margin: 0 0 8px;
+    padding: 7px 9px;
+    border-radius: 10px;
+    background: color-mix(in oklab, var(--st-crit) 16%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--st-crit) 34%, transparent);
+    color: var(--w-ink);
+    font-size: 0.68rem;
+  }
+
+  .taskdrop {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--w-ink-3);
+    cursor: pointer;
+  }
+  .taskdrop:hover {
+    background: var(--w-track);
+    color: var(--w-ink);
+  }
+
   /* --- sort bar ---------------------------------------------------------- */
   /* Minimal by intent: three toggles, no chrome, no dropdown. */
   .sortbar {

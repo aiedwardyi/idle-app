@@ -8,13 +8,15 @@ import { useState, type KeyboardEvent } from "react";
  * shadow copy here would diverge from it the moment the real one arrives.
  */
 type Props = {
-  folder: string;
+  /** `undefined` while the default folder is still resolving. */
+  folder: string | undefined;
   onSubmit: (prompt: string) => void;
 };
 
 export function Composer({ folder, onSubmit }: Props) {
   const [text, setText] = useState("");
-  const ready = text.trim().length > 0;
+  // A task cannot be queued without a folder to run it in.
+  const ready = text.trim().length > 0 && folder !== undefined;
 
   const send = () => {
     if (!ready) return;
@@ -68,7 +70,9 @@ export function Composer({ folder, onSubmit }: Props) {
           <path d="M4 12h14M12 5l7 7-7 7" />
         </svg>
       </button>
-      <span className="composer-hint">runs in {folder}</span>
+      <span className="composer-hint">
+        {folder === undefined ? "finding a folder…" : `runs in ${folder}`}
+      </span>
     </form>
   );
 }
