@@ -1,7 +1,8 @@
 use crate::contract::{
     default_windows, EngineChoice, EngineId, ExitReason, LimitWindowKind, MeterSource, MeterState,
-    Run, Task, TaskSize, TaskStatus, Usage,
+    Run, RunEvent, Task, TaskSize, TaskStatus, Usage,
 };
+use crate::meter::{apply, refresh, seed};
 use rusqlite::{params, Connection, Row};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -279,6 +280,169 @@ fn table_has_column(
     Ok(false)
 }
 
+fn seed_default_windows(conn: &Connection) -> Result<(), StoreError> {
+    for engine in [
+        EngineId::Claude,
+        EngineId::Codex,
+        EngineId::Antigravity,
+        EngineId::Grok,
+    ] {
+        for window in default_windows(engine) {
+            conn.execute(
+                "INSERT OR IGNORE INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at, source, observed_at) VALUES (?1, ?2, 0, 0, 0, NULL, 0, NULL, NULL, ?3, NULL)",
+                params![
+                    engine_id_to_str(engine),
+                    window_to_str(window.kind),
+                    source_to_str(MeterSource::None),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn load_all_meters(conn: &Connection) -> Result<Vec<MeterState>, StoreError> {
+    let mut stmt = conn.prepare(SELECT_METER)?;
+    let meters = stmt
+        .query_map([], row_to_meter)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(meters)
+}
+
+fn load_engine_meters(conn: &Connection, engine: EngineId) -> Result<Vec<MeterState>, StoreError> {
+    let mut stmt = conn.prepare(&format!("{SELECT_METER} WHERE engine = ?1"))?;
+    let meters = stmt
+        .query_map(params![engine_id_to_str(engine)], row_to_meter)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(meters)
+}
+
+fn write_meter(conn: &Connection, m: &MeterState) -> Result<(), StoreError> {
+    let n = conn.execute(
+        "UPDATE meter_state SET used_input = ?1, used_output = ?2, used_cache = ?3, capacity_est = ?4, calibrated = ?5, remaining_pct = ?6, resets_at = ?7, source = ?8, observed_at = ?9 WHERE engine = ?10 AND window = ?11",
+        params![
+            m.used.input as i64,
+            m.used.output as i64,
+            m.used.cache as i64,
+            m.capacity_est.map(|v| v as i64),
+            if m.calibrated { 1 } else { 0 },
+            m.remaining_pct,
+            m.resets_at,
+            source_to_str(m.source),
+            m.observed_at,
+            engine_id_to_str(m.engine),
+            window_to_str(m.window),
+        ],
+    )?;
+    if n == 0 {
+        return Err(StoreError::NotFound(format!(
+            "meter {} {}",
+            engine_id_to_str(m.engine),
+            window_to_str(m.window)
+        )));
+    }
+    Ok(())
+}
+
+fn write_limit_hit(
+    conn: &Connection,
+    engine: EngineId,
+    window: Option<LimitWindowKind>,
+    hit_at: &str,
+    resets_at: Option<String>,
+    usage: Usage,
+) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO limit_hits (engine, window, hit_at, resets_at, used_input, used_output, used_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            engine_id_to_str(engine),
+            window.map(window_to_str),
+            hit_at,
+            resets_at.clone(),
+            usage.input as i64,
+            usage.output as i64,
+            usage.cache as i64,
+        ],
+    )?;
+    if let Some(kind) = window {
+        conn.execute(
+            "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0, source = ?2, observed_at = ?3 WHERE engine = ?4 AND window = ?5",
+            params![
+                resets_at,
+                source_to_str(MeterSource::Vendor),
+                hit_at,
+                engine_id_to_str(engine),
+                window_to_str(kind),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn sync_meters(
+    conn: &Connection,
+    now: &str,
+) -> Result<(Vec<MeterState>, Vec<MeterState>), StoreError> {
+    seed_default_windows(conn)?;
+    let loaded = load_all_meters(conn)?;
+    let mut all = Vec::with_capacity(loaded.len());
+    let mut changed = Vec::new();
+    for row in loaded {
+        let next = refresh(row.clone(), now);
+        if next != row {
+            write_meter(conn, &next)?;
+            changed.push(next.clone());
+        }
+        all.push(next);
+    }
+    Ok((all, changed))
+}
+
+fn fold_run_event(
+    conn: &Connection,
+    engine: EngineId,
+    event: &RunEvent,
+    now: &str,
+    run_usage: Usage,
+) -> Result<Vec<MeterState>, StoreError> {
+    seed_default_windows(conn)?;
+    if let RunEvent::WindowReading { window, .. } = event {
+        if seed(engine, *window).is_none() {
+            eprintln!(
+                "warn: windowReading {window:?} for {engine:?} ignored, not in default_windows"
+            );
+        }
+    }
+    let before = load_engine_meters(conn, engine)?;
+    let mut changed = Vec::new();
+    for row in &before {
+        let next = apply(row.clone(), engine, event, now);
+        if next != *row {
+            write_meter(conn, &next)?;
+            changed.push(next);
+        }
+    }
+    if let RunEvent::LimitHit {
+        window, resets_at, ..
+    } = event
+    {
+        write_limit_hit(conn, engine, *window, now, resets_at.clone(), run_usage)?;
+        if let Some(kind) = window {
+            changed.retain(|m| m.window != *kind);
+            if let Some(row) = load_engine_meters(conn, engine)?
+                .into_iter()
+                .find(|m| m.window == *kind)
+            {
+                let old = before.iter().find(|m| m.window == *kind);
+                if old != Some(&row) {
+                    changed.push(row);
+                }
+            }
+        }
+    }
+    Ok(changed)
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -299,23 +463,7 @@ impl Store {
         )?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        for engine in [
-            EngineId::Claude,
-            EngineId::Codex,
-            EngineId::Antigravity,
-            EngineId::Grok,
-        ] {
-            for window in default_windows(engine) {
-                conn.execute(
-                    "INSERT OR IGNORE INTO meter_state (engine, window, used_input, used_output, used_cache, capacity_est, calibrated, remaining_pct, resets_at, source, observed_at) VALUES (?1, ?2, 0, 0, 0, NULL, 0, NULL, NULL, ?3, NULL)",
-                    params![
-                        engine_id_to_str(engine),
-                        window_to_str(window.kind),
-                        source_to_str(MeterSource::None),
-                    ],
-                )?;
-            }
-        }
+        seed_default_windows(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -558,12 +706,29 @@ impl Store {
     }
 
     pub async fn get_meters(&self) -> Result<Vec<MeterState>, StoreError> {
-        self.run(|conn| {
-            let mut stmt = conn.prepare(SELECT_METER)?;
-            let meters = stmt
-                .query_map([], row_to_meter)?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(meters)
+        self.get_meters_at(now_rfc3339()).await
+    }
+
+    pub async fn get_meters_at(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
+        self.run(move |conn| Ok(sync_meters(conn, &now)?.0)).await
+    }
+
+    pub async fn refresh_meters(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
+        self.run(move |conn| Ok(sync_meters(conn, &now)?.1)).await
+    }
+
+    pub async fn apply_run_event(
+        &self,
+        engine: EngineId,
+        event: RunEvent,
+        now: String,
+        run_usage: Usage,
+    ) -> Result<Vec<MeterState>, StoreError> {
+        self.run(move |conn| {
+            let tx = conn.transaction()?;
+            let changed = fold_run_event(&tx, engine, &event, &now, run_usage)?;
+            tx.commit()?;
+            Ok(changed)
         })
         .await
     }
@@ -607,30 +772,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.run(move |conn| {
             let tx = conn.transaction()?;
-            tx.execute(
-                "INSERT INTO limit_hits (engine, window, hit_at, resets_at, used_input, used_output, used_cache) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    engine_id_to_str(engine),
-                    window.map(window_to_str),
-                    hit_at,
-                    resets_at,
-                    usage.input as i64,
-                    usage.output as i64,
-                    usage.cache as i64,
-                ],
-            )?;
-            if let Some(kind) = window {
-                tx.execute(
-                    "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0, source = ?2, observed_at = ?3 WHERE engine = ?4 AND window = ?5",
-                    params![
-                        resets_at,
-                        source_to_str(MeterSource::Vendor),
-                        hit_at,
-                        engine_id_to_str(engine),
-                        window_to_str(kind),
-                    ],
-                )?;
-            }
+            write_limit_hit(&tx, engine, window, &hit_at, resets_at, usage)?;
             tx.commit()?;
             Ok(())
         })
@@ -840,7 +982,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let hit_meters = store.get_meters().await.unwrap();
+        let hit_meters = store
+            .get_meters_at("2026-09-04T02:00:00Z".into())
+            .await
+            .unwrap();
         let hit_5h = hit_meters
             .iter()
             .find(|m| m.engine == EngineId::Claude && m.window == LimitWindowKind::FiveHour)
@@ -851,7 +996,7 @@ mod tests {
 
     async fn meter(store: &Store, window: LimitWindowKind) -> MeterState {
         store
-            .get_meters()
+            .get_meters_at("2026-09-04T02:00:00Z".into())
             .await
             .unwrap()
             .into_iter()
@@ -1155,5 +1300,85 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, StoreError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn get_meters_rolls_vendor_reading_on_injected_now() {
+        let store = Store::open_in_memory().unwrap();
+        let now = "2026-09-04T00:00:00Z".to_string();
+        let event = RunEvent::WindowReading {
+            run_id: "r1".into(),
+            window: LimitWindowKind::FiveHour,
+            utilization: 0.25,
+            resets_at: Some("2026-09-04T05:00:00Z".into()),
+        };
+        store
+            .apply_run_event(EngineId::Claude, event, now.clone(), Usage::default())
+            .await
+            .unwrap();
+        let five = store
+            .get_meters_at(now)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.engine == EngineId::Claude && m.window == LimitWindowKind::FiveHour)
+            .unwrap();
+        assert_eq!(five.remaining_pct, Some(75.0));
+        assert_eq!(five.resets_at.as_deref(), Some("2026-09-04T05:00:00Z"));
+        assert_eq!(five.source, MeterSource::Vendor);
+
+        let rolled = store
+            .get_meters_at("2026-09-04T05:00:00Z".into())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.engine == EngineId::Claude && m.window == LimitWindowKind::FiveHour)
+            .unwrap();
+        assert_eq!(rolled.remaining_pct, Some(100.0));
+        assert_eq!(rolled.resets_at, None);
+        assert_eq!(rolled.source, MeterSource::Vendor);
+    }
+
+    #[tokio::test]
+    async fn apply_run_event_limit_hit_zeros_that_row_and_records_the_hit() {
+        let store = Store::open_in_memory().unwrap();
+        let now = "2026-09-04T02:00:00Z".to_string();
+        let event = RunEvent::LimitHit {
+            run_id: "r1".into(),
+            window: Some(LimitWindowKind::FiveHour),
+            resets_at: Some("2026-09-04T07:00:00Z".into()),
+        };
+        let changed = store
+            .apply_run_event(EngineId::Claude, event, now.clone(), Usage::default())
+            .await
+            .unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].window, LimitWindowKind::FiveHour);
+        assert_eq!(changed[0].remaining_pct, Some(0.0));
+        assert_eq!(changed[0].source, MeterSource::Vendor);
+        assert_eq!(changed[0].observed_at.as_deref(), Some(now.as_str()));
+
+        let weekly = meter(&store, LimitWindowKind::Weekly).await;
+        assert_eq!(weekly.remaining_pct, None);
+        assert_eq!(weekly.source, MeterSource::None);
+
+        let hits: i64 = store
+            .run(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM limit_hits", [], |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert_eq!(hits, 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_meters_is_silent_when_nothing_changed() {
+        let store = Store::open_in_memory().unwrap();
+        let changed = store
+            .refresh_meters("2026-09-04T00:00:00Z".into())
+            .await
+            .unwrap();
+        assert!(changed.is_empty());
     }
 }
