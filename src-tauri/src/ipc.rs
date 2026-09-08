@@ -181,7 +181,7 @@ impl AppState {
                                         | RunEvent::WindowReading { .. }
                                         | RunEvent::LimitHit { .. }
                                 ) {
-                                    if let Ok(changed) = store
+                                    match store
                                         .apply_run_event(
                                             engine_id,
                                             ev,
@@ -190,11 +190,14 @@ impl AppState {
                                         )
                                         .await
                                     {
-                                        for m in changed {
-                                            if let Ok(val) = serde_json::to_value(&m) {
-                                                emit(METER_UPDATE, val);
+                                        Ok(changed) => {
+                                            for m in changed {
+                                                if let Ok(val) = serde_json::to_value(&m) {
+                                                    emit(METER_UPDATE, val);
+                                                }
                                             }
                                         }
+                                        Err(e) => eprintln!("meter fold: {e}"),
                                     }
                                 }
                             }

@@ -58,7 +58,8 @@ fn apply_event(row: MeterState, engine: EngineId, event: &RunEvent, now: &str) -
             let util = utilization.clamp(0.0, 1.0);
             MeterState {
                 remaining_pct: Some(100.0 * (1.0 - util)),
-                resets_at: resets_at.clone(),
+                // None is no new information, never erase a known deadline.
+                resets_at: resets_at.clone().or_else(|| row.resets_at.clone()),
                 source: MeterSource::Vendor,
                 calibrated: true,
                 observed_at: Some(now.to_string()),
@@ -78,8 +79,11 @@ fn apply_event(row: MeterState, engine: EngineId, event: &RunEvent, now: &str) -
             };
             let (remaining_pct, source) = if row.source == MeterSource::Vendor {
                 (row.remaining_pct, row.source)
-            } else if let Some(cap) = row.capacity_est {
-                let total = (used.input + used.output + used.cache) as f64;
+            } else if let Some(cap) = row.capacity_est.filter(|&c| c > 0) {
+                let total = used
+                    .input
+                    .saturating_add(used.output)
+                    .saturating_add(used.cache) as f64;
                 let remaining = (100.0 * (1.0 - total / cap as f64)).clamp(0.0, 100.0);
                 (Some(remaining), MeterSource::Estimate)
             } else {
@@ -93,6 +97,7 @@ fn apply_event(row: MeterState, engine: EngineId, event: &RunEvent, now: &str) -
             }
         }
         RunEvent::Started { .. } => {
+            // Vendor rows only take a deadline from the vendor; guessing one is forbidden.
             if row.resets_at.is_none() && row.source != MeterSource::Vendor {
                 if let Some(hours) = window_hours(engine, row.window) {
                     return MeterState {
@@ -271,6 +276,40 @@ mod tests {
     }
 
     #[test]
+    fn r1_reading_without_resets_at_keeps_the_deadline() {
+        let row = MeterState {
+            remaining_pct: Some(50.0),
+            resets_at: Some("2026-09-04T05:00:00Z".into()),
+            source: MeterSource::Vendor,
+            ..claude_5h()
+        };
+        let after = apply_claude(row, &reading(LimitWindowKind::FiveHour, 0.25, None));
+        assert_eq!(after.remaining_pct, Some(75.0));
+        assert_eq!(after.resets_at.as_deref(), Some("2026-09-04T05:00:00Z"));
+        assert_eq!(after.source, MeterSource::Vendor);
+    }
+
+    #[test]
+    fn r2_zero_capacity_stays_unknown() {
+        let row = MeterState {
+            capacity_est: Some(0),
+            ..claude_5h()
+        };
+        let after = apply_claude(row, &usage(10, 20, 30));
+        assert_eq!(
+            after.used,
+            Usage {
+                input: 10,
+                output: 20,
+                cache: 30
+            }
+        );
+        assert_eq!(after.remaining_pct, None);
+        assert_eq!(after.source, MeterSource::None);
+        assert_eq!(after.capacity_est, Some(0));
+    }
+
+    #[test]
     fn r3_started_sets_resets_at_from_window_hours() {
         let fresh = apply_claude(claude_5h(), &started());
         assert_eq!(fresh.resets_at.as_deref(), Some("2026-09-04T05:00:00Z"));
@@ -341,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn r7_later_reading_wins() {
+    fn r7_last_applied_reading_wins() {
         let first = reading(LimitWindowKind::FiveHour, 0.25, None);
         let second = reading(LimitWindowKind::FiveHour, 0.5, None);
         let a = apply_claude(apply_claude(claude_5h(), &first), &second);

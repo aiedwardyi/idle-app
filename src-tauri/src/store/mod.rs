@@ -366,7 +366,7 @@ fn write_limit_hit(
     )?;
     if let Some(kind) = window {
         conn.execute(
-            "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0, source = ?2, observed_at = ?3 WHERE engine = ?4 AND window = ?5",
+            "UPDATE meter_state SET resets_at = COALESCE(?1, resets_at), remaining_pct = 0.0, source = ?2, observed_at = ?3 WHERE engine = ?4 AND window = ?5",
             params![
                 resets_at,
                 source_to_str(MeterSource::Vendor),
@@ -379,10 +379,12 @@ fn write_limit_hit(
     Ok(())
 }
 
-fn sync_meters(
-    conn: &Connection,
-    now: &str,
-) -> Result<(Vec<MeterState>, Vec<MeterState>), StoreError> {
+struct SyncedMeters {
+    all: Vec<MeterState>,
+    changed: Vec<MeterState>,
+}
+
+fn sync_meters(conn: &Connection, now: &str) -> Result<SyncedMeters, StoreError> {
     seed_default_windows(conn)?;
     let loaded = load_all_meters(conn)?;
     let mut all = Vec::with_capacity(loaded.len());
@@ -395,7 +397,7 @@ fn sync_meters(
         }
         all.push(next);
     }
-    Ok((all, changed))
+    Ok(SyncedMeters { all, changed })
 }
 
 fn fold_run_event(
@@ -405,7 +407,6 @@ fn fold_run_event(
     now: &str,
     run_usage: Usage,
 ) -> Result<Vec<MeterState>, StoreError> {
-    seed_default_windows(conn)?;
     if let RunEvent::WindowReading { window, .. } = event {
         if seed(engine, *window).is_none() {
             eprintln!(
@@ -710,11 +711,12 @@ impl Store {
     }
 
     pub async fn get_meters_at(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
-        self.run(move |conn| Ok(sync_meters(conn, &now)?.0)).await
+        self.run(move |conn| Ok(sync_meters(conn, &now)?.all)).await
     }
 
     pub async fn refresh_meters(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
-        self.run(move |conn| Ok(sync_meters(conn, &now)?.1)).await
+        self.run(move |conn| Ok(sync_meters(conn, &now)?.changed))
+            .await
     }
 
     pub async fn apply_run_event(
@@ -733,6 +735,7 @@ impl Store {
         .await
     }
 
+    #[cfg(test)]
     pub async fn update_meters_usage(
         &self,
         engine: EngineId,
@@ -762,6 +765,7 @@ impl Store {
     /// which window was exhausted: the hit is still ground truth, so the row
     /// is written, but no meter moves. A guessed bucket is worse than a
     /// meter that stays where it was.
+    #[cfg(test)]
     pub async fn record_limit_hit(
         &self,
         engine: EngineId,
@@ -1373,6 +1377,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn limit_hit_without_reset_keeps_stored_deadline() {
+        let store = Store::open_in_memory().unwrap();
+        let now = "2026-09-04T02:00:00Z".to_string();
+        store
+            .apply_run_event(
+                EngineId::Claude,
+                RunEvent::WindowReading {
+                    run_id: "r1".into(),
+                    window: LimitWindowKind::FiveHour,
+                    utilization: 0.25,
+                    resets_at: Some("2026-09-04T07:00:00Z".into()),
+                },
+                now.clone(),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+        store
+            .apply_run_event(
+                EngineId::Claude,
+                RunEvent::LimitHit {
+                    run_id: "r1".into(),
+                    window: Some(LimitWindowKind::FiveHour),
+                    resets_at: None,
+                },
+                now.clone(),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+        let five = meter(&store, LimitWindowKind::FiveHour).await;
+        assert_eq!(five.remaining_pct, Some(0.0));
+        assert_eq!(five.source, MeterSource::Vendor);
+        assert_eq!(five.resets_at.as_deref(), Some("2026-09-04T07:00:00Z"));
+    }
+
+    #[tokio::test]
     async fn refresh_meters_is_silent_when_nothing_changed() {
         let store = Store::open_in_memory().unwrap();
         let changed = store
@@ -1380,5 +1421,37 @@ mod tests {
             .await
             .unwrap();
         assert!(changed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_meters_reports_and_persists_the_rolled_window() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .apply_run_event(
+                EngineId::Claude,
+                RunEvent::WindowReading {
+                    run_id: "r1".into(),
+                    window: LimitWindowKind::FiveHour,
+                    utilization: 0.25,
+                    resets_at: Some("2026-09-04T05:00:00Z".into()),
+                },
+                "2026-09-04T00:00:00Z".into(),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+        let changed = store
+            .refresh_meters("2026-09-04T05:00:00Z".into())
+            .await
+            .unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].window, LimitWindowKind::FiveHour);
+        assert_eq!(changed[0].remaining_pct, Some(100.0));
+        assert_eq!(changed[0].resets_at, None);
+        let again = store
+            .refresh_meters("2026-09-04T05:00:00Z".into())
+            .await
+            .unwrap();
+        assert!(again.is_empty());
     }
 }
