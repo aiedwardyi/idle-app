@@ -76,6 +76,36 @@ body {
     font-variant-numeric: tabular-nums;
   }
 
+  /* The pro switch. Its pressed state is carried by weight and a tinted
+     ground, not by white-on-accent: the word is 0.56rem, so it needs 4.5:1
+     and ink over a 16% tint keeps it. The ring is the accent, which is a
+     graphical object at 3:1. */
+  .propill {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--w-track);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+    color: var(--w-ink-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.56rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+  .propill:hover {
+    color: var(--w-ink-2);
+  }
+  .propill[aria-pressed="true"] {
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    color: var(--w-ink);
+  }
+
   .actions {
     display: flex;
     flex: 0 0 auto;
@@ -499,6 +529,12 @@ body {
     display: block;
     margin-bottom: 7px;
     font-size: 0.76rem;
+  }
+  .setblock .hint {
+    display: block;
+    margin-top: 1px;
+    font-size: 0.6rem;
+    color: var(--w-ink-3);
   }
   .swatches {
     display: flex;

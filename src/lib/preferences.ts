@@ -1,3 +1,5 @@
+import type { EngineId } from "../types";
+import { ENGINE_ORDER } from "./engines";
 import { SORTS, type Sort } from "./sort";
 
 export const MODES = ["light", "dark", "system"] as const;
@@ -39,6 +41,19 @@ export type Preferences = {
   alwaysOnTop: boolean;
   /** Queue sort order — a view preference, so it lives here. */
   sort: Sort;
+  /**
+   * Pro mode. Off is the shipped product: meters, queue, and the look
+   * controls, nothing else. On unlocks the extra settings groups. Off by
+   * default because the default view is the one CLAUDE.md caps at three
+   * controls — depth is opt-in, not the starting state.
+   */
+  pro: boolean;
+  /**
+   * Engines the user has switched off in pro mode. A list, not a record, so a
+   * new engine in the contract defaults to visible rather than to whatever a
+   * stale stored object happens to say. Only honoured while `pro` is on.
+   */
+  hiddenEngines: EngineId[];
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -47,6 +62,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   accent: "blue",
   alwaysOnTop: false,
   sort: "added",
+  pro: false,
+  hiddenEngines: [],
 };
 
 function isTheme(value: unknown): value is Theme {
@@ -65,6 +82,16 @@ function isSort(value: unknown): value is Sort {
   return SORTS.includes(value as Sort);
 }
 
+function isEngineId(value: unknown): value is EngineId {
+  return ENGINE_ORDER.includes(value as EngineId);
+}
+
+/** Unknown ids are dropped, so a renamed engine cannot stay hidden forever. */
+function toHiddenEngines(value: unknown): EngineId[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter(isEngineId))];
+}
+
 /**
  * Preferences live in localStorage, not the SQLite store: CONTRACT.md has no
  * settings table, and a view preference is not app data. Reads are defensive —
@@ -78,10 +105,8 @@ export function loadPreferences(): Preferences {
     if (typeof parsed !== "object" || parsed === null) {
       return DEFAULT_PREFERENCES;
     }
-    const { theme, mode, accent, alwaysOnTop, sort } = parsed as Record<
-      string,
-      unknown
-    >;
+    const { theme, mode, accent, alwaysOnTop, sort, pro, hiddenEngines } =
+      parsed as Record<string, unknown>;
     return {
       theme: isTheme(theme) ? theme : DEFAULT_PREFERENCES.theme,
       mode: isMode(mode) ? mode : DEFAULT_PREFERENCES.mode,
@@ -91,6 +116,8 @@ export function loadPreferences(): Preferences {
           ? alwaysOnTop
           : DEFAULT_PREFERENCES.alwaysOnTop,
       sort: isSort(sort) ? sort : DEFAULT_PREFERENCES.sort,
+      pro: typeof pro === "boolean" ? pro : DEFAULT_PREFERENCES.pro,
+      hiddenEngines: toHiddenEngines(hiddenEngines),
     };
   } catch {
     return DEFAULT_PREFERENCES;

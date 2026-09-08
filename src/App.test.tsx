@@ -452,6 +452,110 @@ describe("preferences", () => {
   });
 });
 
+describe("pro mode", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  const openSettings = async () => {
+    const u = userEvent.setup();
+    await renderApp();
+    await u.click(screen.getByLabelText("Settings"));
+    return u;
+  };
+
+  test("off by default, and settings then look exactly as they shipped", async () => {
+    await openSettings();
+
+    expect(screen.getByLabelText("Pro mode")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByText("Look & Feel")).toBeInTheDocument();
+    expect(screen.queryByText("Tasks")).not.toBeInTheDocument();
+    expect(screen.queryByText("LLMs")).not.toBeInTheDocument();
+  });
+
+  test("turning it on unlocks the three groups and remembers the choice", async () => {
+    const u = await openSettings();
+    await u.click(screen.getByLabelText("Pro mode"));
+
+    expect(screen.getByLabelText("Pro mode")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    for (const group of ["Colour & Theme", "Tasks", "LLMs"]) {
+      expect(screen.getByText(group)).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Look & Feel")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("idle.preferences")).toContain(
+      '"pro":true',
+    );
+  });
+
+  test("the pro switch is reachable from every screen", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+
+    for (const tab of ["Queue", "Settings", "Meters"]) {
+      await u.click(screen.getByLabelText(tab));
+      expect(screen.getByLabelText("Pro mode")).toBeInTheDocument();
+    }
+  });
+
+  test("switching an engine off drops its row; leaving pro brings it back", async () => {
+    const u = await openSettings();
+    await u.click(screen.getByLabelText("Pro mode"));
+    await u.click(screen.getByText("LLMs"));
+    await u.click(screen.getByLabelText("Grok"));
+
+    await u.click(screen.getByLabelText("Meters"));
+    expect(
+      screen.queryByText("Grok", { selector: ".mname" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Claude", { selector: ".mname" })).toBeVisible();
+
+    await u.click(screen.getByLabelText("Pro mode"));
+    expect(screen.getByText("Grok", { selector: ".mname" })).toBeVisible();
+  });
+
+  test("a hidden engine cannot be counted as working", async () => {
+    const u = userEvent.setup();
+    await renderApp();
+
+    await u.click(
+      within(row("Grok")).getByLabelText("Work the queue with Grok"),
+    );
+    expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
+
+    await u.click(screen.getByLabelText("Pro mode"));
+    await u.click(screen.getByLabelText("Settings"));
+    await u.click(screen.getByText("LLMs"));
+    await u.click(screen.getByLabelText("Grok"));
+    await u.click(screen.getByLabelText("Meters"));
+
+    expect(screen.getByText(/paused/i)).toBeInTheDocument();
+  });
+
+  test("the default sort set in pro settings is what the queue opens on", async () => {
+    const u = await openSettings();
+    await u.click(screen.getByLabelText("Pro mode"));
+    await u.click(screen.getByText("Tasks"));
+
+    await u.click(
+      within(screen.getByRole("group", { name: "Default sort" })).getByRole(
+        "button",
+        { name: "Engine" },
+      ),
+    );
+
+    await u.click(screen.getByLabelText("Queue"));
+    expect(document.querySelector(".task b")?.textContent).toBe(
+      "Write tests for the CSV parser",
+    );
+  });
+});
+
 describe("per-engine transport", () => {
   test("play affects only the engine it belongs to", async () => {
     const user = userEvent.setup();

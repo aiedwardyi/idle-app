@@ -59,7 +59,19 @@ function App() {
     void applyAlwaysOnTop(preferences.alwaysOnTop);
   }, [preferences.alwaysOnTop]);
 
-  const groups = useMemo(() => groupMeters(meters ?? []), [meters]);
+  const all = useMemo(() => groupMeters(meters ?? []), [meters]);
+
+  // Switching an engine off only applies while pro is on: turning pro off is
+  // meant to give back the default app, not a version of it with rows missing.
+  const groups = useMemo(
+    () =>
+      preferences.pro
+        ? all.filter(
+            (group) => !preferences.hiddenEngines.includes(group.engine),
+          )
+        : all,
+    [all, preferences.pro, preferences.hiddenEngines],
+  );
 
   // The reset countdowns are relative to now, so the clock has to advance on
   // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
@@ -116,7 +128,11 @@ function App() {
         title={SCREEN_HEADING[screen]}
         status={status}
         screen={screen}
+        pro={preferences.pro}
         onOpen={setScreen}
+        onTogglePro={() =>
+          setPreferences((current) => ({ ...current, pro: !current.pro }))
+        }
       />
 
       <div className="body">
@@ -168,6 +184,17 @@ function App() {
               setPreferences((current) => ({
                 ...current,
                 alwaysOnTop: !current.alwaysOnTop,
+              }))
+            }
+            onSort={(sort: Sort) =>
+              setPreferences((current) => ({ ...current, sort }))
+            }
+            onToggleEngine={(engine: EngineId) =>
+              setPreferences((current) => ({
+                ...current,
+                hiddenEngines: current.hiddenEngines.includes(engine)
+                  ? current.hiddenEngines.filter((id) => id !== engine)
+                  : [...current.hiddenEngines, engine],
               }))
             }
           />

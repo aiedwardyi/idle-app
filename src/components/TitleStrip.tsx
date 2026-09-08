@@ -16,12 +16,40 @@ type Props = {
   title: string;
   status: string;
   screen: Screen;
+  pro: boolean;
   onOpen: (screen: Screen) => void;
+  onTogglePro: () => void;
 };
 
-export function TitleStrip({ title, status, screen, onOpen }: Props) {
+export function TitleStrip({
+  title,
+  status,
+  screen,
+  pro,
+  onOpen,
+  onTogglePro,
+}: Props) {
   return (
     <div className="strip" data-tauri-drag-region>
+      {/* Left, away from the tab cluster on the right, because it is not a
+          fourth destination: it changes what the other three contain. Its own
+          state is the one thing it has to make obvious, so it carries a word
+          rather than an icon. */}
+      <button
+        type="button"
+        className="propill"
+        aria-pressed={pro}
+        aria-label="Pro mode"
+        title={
+          pro
+            ? "Pro mode on — extra settings unlocked"
+            : "Pro mode off — simple view"
+        }
+        onClick={onTogglePro}
+      >
+        Pro
+      </button>
+
       <span className="brand">
         <b>{title}</b>
         <span>{status}</span>

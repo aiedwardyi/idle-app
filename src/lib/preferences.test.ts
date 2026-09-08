@@ -17,20 +17,17 @@ describe("loadPreferences", () => {
   });
 
   test("round-trips a saved appearance", () => {
-    savePreferences({
+    const saved = {
       theme: "console",
       mode: "dark",
       accent: "teal",
       alwaysOnTop: true,
       sort: "priority",
-    });
-    expect(loadPreferences()).toEqual({
-      theme: "console",
-      mode: "dark",
-      accent: "teal",
-      alwaysOnTop: true,
-      sort: "priority",
-    });
+      pro: true,
+      hiddenEngines: ["grok"],
+    } as const;
+    savePreferences(saved);
+    expect(loadPreferences()).toEqual(saved);
   });
 
   test("ignores unknown values rather than stamping them on the root", () => {
@@ -78,6 +75,27 @@ describe("loadPreferences", () => {
       accent: DEFAULT_PREFERENCES.accent,
       alwaysOnTop: DEFAULT_PREFERENCES.alwaysOnTop,
       sort: DEFAULT_PREFERENCES.sort,
+      pro: DEFAULT_PREFERENCES.pro,
+      hiddenEngines: DEFAULT_PREFERENCES.hiddenEngines,
     });
+  });
+
+  test("pro is off unless it was explicitly stored as a boolean", () => {
+    expect(loadPreferences().pro).toBe(false);
+    window.localStorage.setItem(KEY, JSON.stringify({ pro: "yes" }));
+    expect(loadPreferences().pro).toBe(false);
+  });
+
+  test("unknown engine ids are dropped from hiddenEngines", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ hiddenEngines: ["grok", "bard", 7, "grok"] }),
+    );
+    expect(loadPreferences().hiddenEngines).toEqual(["grok"]);
+  });
+
+  test("a non-array hiddenEngines hides nothing", () => {
+    window.localStorage.setItem(KEY, JSON.stringify({ hiddenEngines: "grok" }));
+    expect(loadPreferences().hiddenEngines).toEqual([]);
   });
 });
