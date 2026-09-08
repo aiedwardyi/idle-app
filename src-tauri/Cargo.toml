@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "idle-app"
 authors = ["you"]
 edition = "2021"
+# Two binaries exist (idle-app and the fake_cli test helper), so a bare
+# `cargo run` is ambiguous and `tauri dev` fails before the window opens.
+default-run = "idle-app"
 
 [lib]
 name = "idle_app_lib"
