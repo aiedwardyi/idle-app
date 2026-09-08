@@ -15,6 +15,8 @@ const meter = (over: Partial<MeterState> = {}): MeterState => ({
   calibrated: true,
   remainingPct: 48,
   resetsAt: "2026-09-01T14:06:00Z",
+  source: "none",
+  observedAt: null,
   ...over,
 });
 

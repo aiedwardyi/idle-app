@@ -73,6 +73,7 @@ fn run_id_of(event: &RunEvent) -> &str {
         | RunEvent::Output { run_id, .. }
         | RunEvent::Usage { run_id, .. }
         | RunEvent::LimitHit { run_id, .. }
+        | RunEvent::WindowReading { run_id, .. }
         | RunEvent::Finished { run_id, .. }
         | RunEvent::Error { run_id, .. } => run_id,
     }
@@ -158,6 +159,33 @@ async fn success_run_emits_usage_exactly_once_from_result_total() {
         count(&events, |e| matches!(e, RunEvent::Output { .. })),
         14,
         "all 14 fixture lines reach the caller"
+    );
+    let readings: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            RunEvent::WindowReading {
+                window,
+                utilization,
+                resets_at,
+                ..
+            } => Some((*window, *utilization, resets_at.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        readings,
+        vec![
+            (
+                LimitWindowKind::FiveHour,
+                0.13,
+                Some("2026-09-03T02:50:00Z".into())
+            ),
+            (
+                LimitWindowKind::Weekly,
+                0.38,
+                Some("2026-09-03T20:00:00Z".into())
+            ),
+        ]
     );
 }
 

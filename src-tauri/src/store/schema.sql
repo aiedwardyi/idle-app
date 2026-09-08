@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 2);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS meter_state (
     calibrated INTEGER NOT NULL,
     remaining_pct REAL,
     resets_at TEXT,
+    source TEXT NOT NULL DEFAULT 'none',
+    observed_at TEXT,
     PRIMARY KEY (engine, window)
 );
 
