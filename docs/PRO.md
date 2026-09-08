@@ -46,6 +46,26 @@ grows saved prompts and a per-task folder.
   which swallows failure so the same build runs under `vite dev` and jsdom.
   `setSize` needs `core:window:allow-set-size` in the capability file.
 
+## Starting work
+
+`run_now` takes one task and returns one Run, so that is what the UI offers: a
+play button on each task row, in both modes. There is no scheduler — nothing
+picks a next task — so a finished run leaves the engine idle until someone
+presses play again. That is the truth about what the app does today, and the
+meter row's transport says the same thing: it is a **stop** button, live only
+while that engine has a process running, disabled and labelled idle otherwise.
+A play button there would imply a queue runner that does not exist yet.
+
+A run's terminal state belongs to the store: the backend flips the task to
+done, failed or discarded after the process exits, so `finished` and `error`
+events trigger a re-read of `list_tasks` rather than an optimistic guess.
+
+This is also the answer to "why are all the meters blank?" — `meter_state` is
+seeded one row per engine per window with zeros and NULLs, and only a real run
+fills it in. `usedPct` returns null when neither `remainingPct` nor
+`capacityEst` is known, and the row says "no estimate" instead of inventing a
+number.
+
 ## Rules this bends, on purpose
 
 - `CLAUDE.md` caps a screen at three controls. The default view now has exactly

@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { EngineId, LimitWindowKind, TaskSize } from "./types";
 import { useTasks } from "./hooks/useTasks";
 import { useMeters } from "./hooks/useMeters";
+import { useRuns } from "./hooks/useRuns";
 import { defaultFolder } from "./lib/folder";
-import { groupMeters, levelFor, usedPct } from "./lib/meters";
+import { groupMeters } from "./lib/meters";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
 import {
   DEFAULT_PREFERENCES,
@@ -27,9 +28,6 @@ function App() {
   const [selected, setSelected] = useState<
     Partial<Record<EngineId, LimitWindowKind>>
   >({});
-  const [running, setRunning] = useState<Partial<Record<EngineId, boolean>>>(
-    {},
-  );
 
   const [priorities, setPriorities] = useState(loadPriorities);
 
@@ -43,8 +41,29 @@ function App() {
     setEngineMany,
     remove,
     removeMany,
+    refresh,
   } = useTasks();
   const { meters, error: meterError } = useMeters();
+
+  // Real runs, not a local flag: an engine is working because a process is,
+  // and it stops working when that process exits.
+  const { active, error: runError, start, stop } = useRuns(refresh);
+
+  const byTask = useMemo(
+    () =>
+      Object.fromEntries(
+        active.map((run) => [run.taskId, run.runId]),
+      ) as Record<string, string>,
+    [active],
+  );
+
+  const runs = useMemo(
+    () =>
+      Object.fromEntries(
+        active.map((run) => [run.engine, run.runId]),
+      ) as Partial<Record<EngineId, string>>,
+    [active],
+  );
 
   useEffect(() => {
     savePriorities(priorities);
@@ -175,18 +194,11 @@ function App() {
     [tasks],
   );
 
-  const live = groups.filter((group) => {
-    if (!running[group.engine]) return false;
-    const window =
-      selected[group.engine] ??
-      preferences.defaultWindow[group.engine] ??
-      group.windows[0].window;
-    const meter =
-      group.windows.find((w) => w.window === window) ?? group.windows[0];
-    return levelFor(usedPct(meter), levels) !== "hit";
-  }).length;
+  const live = groups.filter(
+    (group) => runs[group.engine] !== undefined,
+  ).length;
 
-  const problem = error ?? meterError;
+  const problem = error ?? runError ?? meterError;
 
   const status =
     screen === "widget"
@@ -208,9 +220,6 @@ function App() {
 
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
-
-  const toggleRun = (engine: EngineId) =>
-    setRunning((current) => ({ ...current, [engine]: !current[engine] }));
 
   return (
     <main className="widget">
@@ -234,13 +243,13 @@ function App() {
           <Widget
             groups={groups}
             selected={selected}
-            running={running}
+            runs={runs}
             now={now}
             levels={levels}
             showFooter={!pro || preferences.showFooter}
             defaultWindow={pro ? preferences.defaultWindow : {}}
             onSelectWindow={selectWindow}
-            onToggleRun={toggleRun}
+            onStop={(runId) => void stop(runId)}
           />
         )}
         {screen === "tasks" && (
@@ -252,7 +261,10 @@ function App() {
             pro={pro}
             order={preferences.order}
             filters={pro ? filters : NO_FILTERS}
+            running={byTask}
             onFilters={setFilters}
+            onRun={(task) => void start(task)}
+            onStopTask={(runId) => void stop(runId)}
             onEngine={(id, engine) => void setEngine(id, engine)}
             onSize={(id, size: TaskSize) => void setSize(id, size)}
             onRemove={(id) => void remove(id)}

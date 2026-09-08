@@ -17,6 +17,25 @@ export function useTasks() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Re-read the list. Statuses change in the store rather than here — a run
+   * claims a task and the backend finishes it — so anything that moves one
+   * asks for a fresh read instead of patching a guess into place.
+   */
+  const refresh = useCallback(async () => {
+    try {
+      setTasks(await listTasks());
+      setError(null);
+    } catch (caught) {
+      setError(message(caught));
+      // An empty array, not null: the load finished, it just failed.
+      setTasks((current) => current ?? []);
+    }
+  }, []);
+
+  // The first load is spelled out rather than calling refresh(): a bare
+  // setState in an effect body is a cascading render, and the mounted guard
+  // belongs to this effect rather than to the shared callback.
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -26,7 +45,6 @@ export function useTasks() {
       } catch (caught) {
         if (live) {
           setError(message(caught));
-          // An empty array, not null: the load finished, it just failed.
           setTasks([]);
         }
       }
@@ -135,5 +153,6 @@ export function useTasks() {
     setEngineMany,
     remove,
     removeMany,
+    refresh,
   };
 }

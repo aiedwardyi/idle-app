@@ -1123,6 +1123,40 @@ body {
     font: inherit;
     font-size: 0.66rem;
   }
+  /* Same transport as a meter row, at task scale. Available in both modes:
+     starting work is the app's job, not a pro feature. */
+  .taskplay {
+    display: grid;
+    width: 21px;
+    height: 21px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    cursor: pointer;
+    transition:
+      transform 0.14s,
+      background 0.16s;
+  }
+  .taskplay[data-running="false"] {
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--accent) 38%, transparent);
+    color: var(--accent);
+  }
+  .taskplay[data-running="false"]:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+    transform: scale(1.08);
+  }
+  /* Solid while it runs: this is the one row doing work. */
+  .taskplay[data-running="true"] {
+    background: var(--accent);
+    color: #fff;
+  }
+  .taskplay:disabled {
+    cursor: not-allowed;
+    opacity: 0.34;
+  }
+
   .taskpick {
     flex: 0 0 auto;
     margin-right: 2px;

@@ -19,6 +19,8 @@ export const ipc = {
   nextId: 0,
   /** Real window calls the app makes, so settings can be asserted end to end. */
   window: { alwaysOnTop: [] as boolean[], size: [] as [number, number][] },
+  /** Monotonic run ids, matching the store's one-run-per-start behaviour. */
+  nextRun: 0,
 };
 
 const task = (id: string, prompt: string, over: Partial<Task> = {}): Task => ({
@@ -72,6 +74,7 @@ export function resetIpc(): void {
   ipc.listeners = {};
   ipc.nextId = ipc.tasks.length;
   ipc.window = { alwaysOnTop: [], size: [] };
+  ipc.nextRun = 0;
 }
 
 export function emit(event: string, payload: unknown): void {
@@ -108,6 +111,27 @@ export async function handleInvoke(
     case "delete_task":
       ipc.tasks = ipc.tasks.filter((t) => t.id !== args.id);
       return null;
+    case "run_now": {
+      // The store claims the task before it spawns anything, so a run that
+      // starts always leaves the task `running` behind it.
+      const found = ipc.tasks.find((t) => t.id === args.taskId);
+      if (found === undefined) throw `task not found: ${String(args.taskId)}`;
+      if (found.status !== "queued") throw "task is not queued";
+      ipc.nextRun += 1;
+      ipc.tasks = ipc.tasks.map((t) =>
+        t.id === found.id ? { ...t, status: "running" } : t,
+      );
+      return {
+        id: `r${ipc.nextRun}`,
+        taskId: found.id,
+        engine: found.engine.type === "fixed" ? found.engine.engine : "claude",
+        startedAt: "2026-09-01T06:10:00Z",
+        finishedAt: null,
+        exitReason: null,
+        usage: { input: 0, output: 0, cache: 0 },
+        snapshotId: null,
+      };
+    }
     case "get_meters":
       return [...ipc.meters];
     case "get_engines":

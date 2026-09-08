@@ -31,10 +31,10 @@ describe("MeterRow", () => {
       <MeterRow
         group={group([meter()])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={noop}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 
@@ -43,15 +43,54 @@ describe("MeterRow", () => {
     expect(screen.getByText(/2h 06m/)).toBeInTheDocument();
   });
 
+  test("a live run turns the transport into a stop", async () => {
+    const user = userEvent.setup();
+    const onStop = vi.fn();
+    render(
+      <MeterRow
+        group={group([meter()])}
+        selected="fiveHour"
+        runId="r9"
+        now={NOW}
+        onSelectWindow={noop}
+        onStop={onStop}
+      />,
+    );
+
+    const button = screen.getByLabelText("Stop Claude");
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  test("an idle engine says so rather than offering a start", () => {
+    render(
+      <MeterRow
+        group={group([meter()])}
+        selected="fiveHour"
+        runId={null}
+        now={NOW}
+        onSelectWindow={noop}
+        onStop={noop}
+      />,
+    );
+
+    // There is no queue runner behind a play button here, so there is no
+    // play button pretending there is.
+    expect(
+      screen.getByLabelText("Claude is idle — press play on a task"),
+    ).toBeDisabled();
+  });
+
   test("an exhausted engine cannot be started", () => {
     render(
       <MeterRow
         group={group([meter({ remainingPct: -22 })])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={noop}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 
@@ -60,6 +99,8 @@ describe("MeterRow", () => {
     // a clock would imply there is still time on the window
     expect(document.querySelector('[data-icon="blocked"]')).toBeInTheDocument();
     expect(document.querySelector('[data-icon="near"]')).toBeNull();
+    // Idle and exhausted are both disabled, but they say different things:
+    // one is waiting for work, the other cannot take any.
     expect(screen.getByLabelText("Claude has no headroom left")).toBeDisabled();
   });
 
@@ -74,10 +115,10 @@ describe("MeterRow", () => {
           }),
         ])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={noop}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 
@@ -91,10 +132,10 @@ describe("MeterRow", () => {
       <MeterRow
         group={group([meter({ remainingPct: null, capacityEst: null })])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={noop}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 
@@ -112,10 +153,10 @@ describe("MeterRow", () => {
       <MeterRow
         group={group([meter(), meter({ window: "weekly" })])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={onSelectWindow}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 
@@ -128,10 +169,10 @@ describe("MeterRow", () => {
       <MeterRow
         group={group([meter({ window: "weekly" })])}
         selected="fiveHour"
-        running={false}
+        runId={null}
         now={NOW}
         onSelectWindow={noop}
-        onToggleRun={noop}
+        onStop={noop}
       />,
     );
 

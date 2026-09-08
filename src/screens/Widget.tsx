@@ -5,26 +5,27 @@ import type { EngineMeters } from "../lib/meters";
 type Props = {
   groups: EngineMeters[];
   selected: Partial<Record<EngineId, LimitWindowKind>>;
-  running: Partial<Record<EngineId, boolean>>;
+  /** Run id per engine, for the ones with something in flight. */
+  runs: Partial<Record<EngineId, string>>;
   now: Date;
   levels: { tight: number; near: number };
   showFooter: boolean;
   /** The window each engine opens on, until the user picks another. */
   defaultWindow: Partial<Record<EngineId, LimitWindowKind>>;
   onSelectWindow: (engine: EngineId, kind: LimitWindowKind) => void;
-  onToggleRun: (engine: EngineId) => void;
+  onStop: (runId: string) => void;
 };
 
 export function Widget({
   groups,
   selected,
-  running,
+  runs,
   now,
   levels,
   showFooter,
   defaultWindow,
   onSelectWindow,
-  onToggleRun,
+  onStop,
 }: Props) {
   return (
     <div className="meters">
@@ -37,12 +38,15 @@ export function Widget({
             defaultWindow[group.engine] ??
             group.windows[0].window
           }
-          running={running[group.engine] ?? false}
+          runId={runs[group.engine] ?? null}
           now={now}
           levels={levels}
           showFooter={showFooter}
           onSelectWindow={(kind) => onSelectWindow(group.engine, kind)}
-          onToggleRun={() => onToggleRun(group.engine)}
+          onStop={() => {
+            const runId = runs[group.engine];
+            if (runId !== undefined) onStop(runId);
+          }}
         />
       ))}
     </div>

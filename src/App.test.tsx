@@ -851,13 +851,15 @@ describe("pro: llms", () => {
     const u = userEvent.setup();
     await renderApp();
 
-    await u.click(
-      within(row("Grok")).getByLabelText("Work the queue with Grok"),
-    );
+    // t2 is pinned to Claude, so starting it makes Claude the live engine
+    await u.click(screen.getByLabelText("Queue"));
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+    await u.click(screen.getByLabelText("Meters"));
     expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
 
+    // hiding it must not leave a count with no row to explain it
     await openLlms(u);
-    await u.click(screen.getByLabelText("Grok"));
+    await u.click(screen.getByLabelText("Claude"));
     await u.click(screen.getByLabelText("Meters"));
 
     expect(screen.getByText(/paused/i)).toBeInTheDocument();
@@ -940,22 +942,158 @@ describe("pro: llms", () => {
   });
 });
 
-describe("per-engine transport", () => {
-  test("play affects only the engine it belongs to", async () => {
-    const user = userEvent.setup();
-    await renderApp();
+describe("running a task", () => {
+  const call = (cmd: string) => ipc.calls.find((c) => c.cmd === cmd);
 
-    await user.click(
-      within(row("Codex")).getByLabelText("Work the queue with Codex"),
+  const openQueue = async (u: ReturnType<typeof userEvent.setup>) => {
+    await renderApp();
+    await u.click(screen.getByLabelText("Queue"));
+  };
+
+  test("play on a task calls run_now with that task", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+
+    await u.click(screen.getByLabelText("Run Draft the migration plan for v3"));
+
+    expect(call("run_now")?.args).toEqual({ taskId: "t3" });
+    // the store claimed it, so the same button now stops it
+    const button = await screen.findByLabelText(
+      "Stop Draft the migration plan for v3",
     );
+    await u.click(button);
+    expect(call("stop_run")?.args).toEqual({ runId: "r1" });
+  });
+
+  test("a task running in another window offers neither start nor stop", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+
+    // t1 arrives `running` from the store, started by nobody in this window,
+    // so there is no run id here to cancel and nothing to restart.
+    expect(
+      screen.getByLabelText("Add retry to the sync worker is already running"),
+    ).toBeDisabled();
+    expect(ipc.calls.some((c) => c.cmd === "run_now")).toBe(false);
+  });
+
+  test("a rejected run_now surfaces and starts nothing", async () => {
+    const u = userEvent.setup();
+    ipc.fail.run_now = "claude CLI not found";
+    await openQueue(u);
+
+    await u.click(screen.getByLabelText("Run Draft the migration plan for v3"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "claude CLI not found",
+    );
+    expect(screen.getByText(/3 queued/i)).toBeInTheDocument();
+  });
+
+  test("an engine is working only while a process is", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+
+    // t2 is pinned to Claude, so that is the engine that lights up
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+    await u.click(screen.getByLabelText("Meters"));
 
     expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
+    expect(within(row("Claude")).getByLabelText("Stop Claude")).toBeEnabled();
+    // ...and the ones with nothing in flight say so instead of offering play
     expect(
-      within(row("Codex")).getByLabelText("Pause Codex"),
-    ).toBeInTheDocument();
-    expect(
-      within(row("Claude")).getByLabelText("Work the queue with Claude"),
-    ).toBeInTheDocument();
+      within(row("Codex")).getByLabelText(
+        "Codex is idle — press play on a task",
+      ),
+    ).toBeDisabled();
+  });
+
+  test("stopping calls stop_run with the run id", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+    await u.click(screen.getByLabelText("Meters"));
+
+    await u.click(within(row("Claude")).getByLabelText("Stop Claude"));
+
+    expect(call("stop_run")?.args).toEqual({ runId: "r1" });
+  });
+
+  test("a finished run clears the engine and re-reads the store", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+    await u.click(screen.getByLabelText("Meters"));
+    expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
+
+    const before = ipc.calls.filter((c) => c.cmd === "list_tasks").length;
+    // The backend flips the task to done after the process exits, so the
+    // truth is in the store, not in an optimistic guess here.
+    ipc.tasks = ipc.tasks.map((t) =>
+      t.id === "t2" ? { ...t, status: "done" as const } : t,
+    );
+    await act(async () => {
+      emit("run_event", { type: "finished", runId: "r1", ok: true });
+    });
+
+    expect(screen.getByText(/paused/i)).toBeInTheDocument();
+    expect(ipc.calls.filter((c) => c.cmd === "list_tasks").length).toBe(
+      before + 1,
+    );
+    expect(screen.getByText(/2 queued/i)).toBeInTheDocument();
+  });
+
+  test("an error event surfaces and does not leave the engine working", async () => {
+    const u = userEvent.setup();
+    await openQueue(u);
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+
+    await act(async () => {
+      emit("run_event", {
+        type: "error",
+        runId: "r1",
+        message: "spawn failed",
+      });
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("spawn failed");
+    await u.click(screen.getByLabelText("Meters"));
+    expect(screen.getByText(/paused/i)).toBeInTheDocument();
+  });
+
+  test("usage from a real run reaches the bar it belongs to", async () => {
+    // The blank meters people see are a store with nothing in it, not a
+    // broken read: one meter_update is enough to fill the row in.
+    await renderApp();
+    ipc.meters = [
+      {
+        engine: "claude",
+        window: "fiveHour",
+        used: { input: 0, output: 0, cache: 0 },
+        capacityEst: null,
+        calibrated: false,
+        remainingPct: null,
+        resetsAt: null,
+      },
+    ];
+    render(<App />);
+    expect((await screen.findAllByText("no estimate")).length).toBeGreaterThan(
+      0,
+    );
+
+    await act(async () => {
+      emit("meter_update", {
+        engine: "claude",
+        window: "fiveHour",
+        used: { input: 900_000, output: 100_000, cache: 0 },
+        capacityEst: 2_000_000,
+        calibrated: true,
+        remainingPct: 50,
+        resetsAt: null,
+      });
+    });
+
+    expect(screen.getAllByText("50% used").length).toBeGreaterThan(0);
   });
 });
 

@@ -44,7 +44,11 @@ type Props = {
   /** Task ids in the order the user dragged them, for the manual sort. */
   order: string[];
   filters: Filters;
+  /** Task id -> run id, for the ones this window has in flight. */
+  running: Record<string, string>;
   onFilters: (filters: Filters) => void;
+  onRun: (task: Task) => void;
+  onStopTask: (runId: string) => void;
   onEngine: (id: string, engine: EngineChoice) => void;
   onPriority: (id: string, priority: Priority) => void;
   onSize: (id: string, size: TaskSize) => void;
@@ -63,7 +67,10 @@ export function Tasks({
   pro,
   order,
   filters,
+  running,
   onFilters,
+  onRun,
+  onStopTask,
   onEngine,
   onPriority,
   onSize,
@@ -259,6 +266,7 @@ export function Tasks({
         const dot = CHOICES.find((choice) => choice.value === value)?.dot;
         const priority = priorities[task.id] ?? DEFAULT_PRIORITY;
         const draggable = pro && sort === "manual";
+        const runId = running[task.id];
 
         return (
           <div
@@ -297,6 +305,29 @@ export function Tasks({
                 ⠿
               </span>
             )}
+
+            {/* Work starts here, on a task, because run_now takes a task.
+                Once it is running the same button stops it — the run this
+                window started is the one thing it can honestly cancel. A
+                task left `running` by some other window has neither. */}
+            <button
+              type="button"
+              className="taskplay"
+              data-running={runId !== undefined}
+              disabled={runId === undefined && task.status !== "queued"}
+              aria-label={
+                runId !== undefined
+                  ? `Stop ${task.prompt}`
+                  : task.status === "queued"
+                    ? `Run ${task.prompt}`
+                    : `${task.prompt} is already ${task.status}`
+              }
+              onClick={() =>
+                runId === undefined ? onRun(task) : onStopTask(runId)
+              }
+            >
+              <Icon name={runId === undefined ? "play" : "pause"} size={10} />
+            </button>
 
             <span className="taskbody">
               <b>{task.prompt}</b>

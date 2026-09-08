@@ -25,28 +25,30 @@ const LEVEL_ICON = {
 type Props = {
   group: EngineMeters;
   selected: LimitWindowKind;
-  running: boolean;
+  /** The run this engine is executing, if any. Null means idle. */
+  runId: string | null;
   now: Date;
   /** Percent used at which the row starts reading tight / near limit. */
   levels?: { tight: number; near: number };
   /** The state, percent and token line. Hidden by a pro preference. */
   showFooter?: boolean;
   onSelectWindow: (kind: LimitWindowKind) => void;
-  onToggleRun: () => void;
+  onStop: () => void;
 };
 
 export function MeterRow({
   group,
   selected,
-  running,
+  runId,
   now,
   levels,
   showFooter = true,
   onSelectWindow,
-  onToggleRun,
+  onStop,
 }: Props) {
   const meter: MeterState =
     group.windows.find((w) => w.window === selected) ?? group.windows[0];
+  const running = runId !== null;
   const label = ENGINE_LABEL[group.engine];
   const pct = usedPct(meter);
   const level = levelFor(pct, levels);
@@ -77,18 +79,21 @@ export function MeterRow({
       </div>
 
       <div className="mbar">
+        {/* Stop, not start. Work begins on a task — a queue with no runner
+            behind it must not have a play button implying otherwise — so this
+            is live only while this engine is actually running something. */}
         <button
           type="button"
           className="rowplay"
           data-running={running}
-          disabled={exhausted}
-          onClick={onToggleRun}
+          disabled={!running}
+          onClick={onStop}
           aria-label={
-            exhausted
-              ? `${label} has no headroom left`
-              : running
-                ? `Pause ${label}`
-                : `Work the queue with ${label}`
+            running
+              ? `Stop ${label}`
+              : exhausted
+                ? `${label} has no headroom left`
+                : `${label} is idle — press play on a task`
           }
         >
           <Icon name={running ? "pause" : "play"} size={11} />
