@@ -441,6 +441,7 @@ struct ParsedWindow {
 /// One reading per resolved kind. `seven_day*` buckets collapse to weekly,
 /// keeping the highest utilization and that bucket's reset. Malformed
 /// entries are skipped; an absent or unparseable map is empty. Never guessed.
+/// Unrecognised keys including `overage` are skipped on purpose, same rule as the rejected path.
 fn parse_unified_windows(windows: &Value) -> Vec<ParsedWindow> {
     let Some(map) = windows.as_object() else {
         return Vec::new();

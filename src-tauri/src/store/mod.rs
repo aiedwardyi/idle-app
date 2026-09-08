@@ -255,7 +255,9 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
         conn.execute_batch(MIGRATE_V1_TO_V2)?;
     }
     if version < 3 {
-        if table_has_column(conn, "meter_state", "source")? {
+        if table_has_column(conn, "meter_state", "source")?
+            && table_has_column(conn, "meter_state", "observed_at")?
+        {
             conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
         } else {
             conn.execute_batch(MIGRATE_V2_TO_V3)?;
@@ -264,6 +266,7 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Callers must pass hardcoded table-name literals only. PRAGMA takes no bind parameters.
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, StoreError> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let mut rows = stmt.query([])?;
@@ -618,9 +621,11 @@ impl Store {
             )?;
             if let Some(kind) = window {
                 tx.execute(
-                    "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0 WHERE engine = ?2 AND window = ?3",
+                    "UPDATE meter_state SET resets_at = ?1, remaining_pct = 0.0, source = ?2, observed_at = ?3 WHERE engine = ?4 AND window = ?5",
                     params![
                         resets_at,
+                        source_to_str(MeterSource::Vendor),
+                        hit_at,
                         engine_id_to_str(engine),
                         window_to_str(kind),
                     ],
@@ -871,6 +876,8 @@ mod tests {
         let weekly = meter(&store, LimitWindowKind::Weekly).await;
         assert_eq!(weekly.remaining_pct, Some(0.0));
         assert_eq!(weekly.resets_at.as_deref(), Some("2026-09-11T02:00:00Z"));
+        assert_eq!(weekly.source, MeterSource::Vendor);
+        assert_eq!(weekly.observed_at.as_deref(), Some("2026-09-04T02:00:00Z"));
 
         let five_hour = meter(&store, LimitWindowKind::FiveHour).await;
         assert_eq!(
@@ -878,6 +885,8 @@ mod tests {
             "the other window is untouched"
         );
         assert_eq!(five_hour.resets_at, None);
+        assert_eq!(five_hour.source, MeterSource::None);
+        assert_eq!(five_hour.observed_at, None);
 
         let others_clean = store
             .get_meters()
@@ -887,6 +896,34 @@ mod tests {
             .filter(|m| m.engine != EngineId::Claude)
             .all(|m| m.remaining_pct.is_none() && m.resets_at.is_none());
         assert!(others_clean, "other engines are untouched");
+    }
+
+    #[tokio::test]
+    async fn limit_hit_sets_vendor_source_and_observed_at_to_hit_at() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .record_limit_hit(
+                EngineId::Claude,
+                Some(LimitWindowKind::FiveHour),
+                "2026-09-04T02:00:00Z".into(),
+                Some("2026-09-04T07:00:00Z".into()),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+
+        let five_hour = meter(&store, LimitWindowKind::FiveHour).await;
+        assert_eq!(five_hour.remaining_pct, Some(0.0));
+        assert_eq!(five_hour.source, MeterSource::Vendor);
+        assert_eq!(
+            five_hour.observed_at.as_deref(),
+            Some("2026-09-04T02:00:00Z")
+        );
+        assert_eq!(
+            five_hour.resets_at.as_deref(),
+            Some("2026-09-04T07:00:00Z"),
+            "resets_at stays the deadline, not the observation"
+        );
     }
 
     #[tokio::test]

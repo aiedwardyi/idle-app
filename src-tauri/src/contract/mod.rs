@@ -186,6 +186,7 @@ pub struct MeterState {
     pub calibrated: bool,
     pub remaining_pct: Option<f64>,
     pub resets_at: Option<String>,
+    // windowReading write path lands in the meter fold PR.
     pub source: MeterSource,
     pub observed_at: Option<String>,
 }
