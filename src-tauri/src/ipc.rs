@@ -5,7 +5,7 @@ use crate::contract::{
 use crate::engines::claude::ClaudeEngine;
 use crate::engines::{Engine, RunCtx};
 use crate::scheduler::{self, Idle, Snapshot};
-use crate::store::{now_rfc3339, Store};
+use crate::store::Store;
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -34,6 +34,16 @@ pub const SCHEDULE_STATUS: &str = "schedule_status";
 pub const RUN_EVENT: &str = "run_event";
 pub const METER_UPDATE: &str = "meter_update";
 pub const ENGINE_STATUS: &str = "engine_status";
+pub const TASK_UPDATE: &str = "task_update";
+
+/// A rejected claim is a race the next tick re-decides; anything else leaves the task stuck unless it is failed.
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    #[error("{0}")]
+    Rejected(String),
+    #[error("{0}")]
+    Failed(String),
+}
 
 pub struct AppState {
     pub store: Store,
@@ -130,7 +140,48 @@ impl AppState {
             .filter(|t| t.status == TaskStatus::Queued && scheduler::resolve(&t.engine) == engine)
             .min_by_key(|t| (t.created_at.clone(), t.id.clone()))
             .ok_or("no queued tasks")?;
-        self.start_run(task.id, emit).await
+        self.start_run(task.id, emit)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// A run that reached `finish_run` already owns the task's status; only a start that died before that needs marking.
+    async fn fail_task<F>(&self, task_id: &str, emit: &F) -> Result<(), String>
+    where
+        F: Fn(&str, serde_json::Value),
+    {
+        let Some(task) = self
+            .store
+            .get_task(task_id.to_string())
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        if !matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
+            return Ok(());
+        }
+        let now = (self.clock)()
+            .to_utc()
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        let task = self
+            .store
+            .update_task(
+                task.id,
+                None,
+                None,
+                None,
+                None,
+                Some(TaskStatus::Failed),
+                now,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        emit(
+            TASK_UPDATE,
+            serde_json::to_value(&task).map_err(|e| e.to_string())?,
+        );
+        Ok(())
     }
 
     pub async fn scheduler_tick<F>(&self, emit: F) -> Result<(), String>
@@ -155,8 +206,17 @@ impl AppState {
         }
         let decision = scheduler::decide(&self.snapshot(detect.clone()).await?);
         for task_id in decision.starts {
-            if let Err(message) = self.start_run(task_id.clone(), emit.clone()).await {
-                eprintln!("scheduler start {task_id}: {message}");
+            match self.start_run(task_id.clone(), emit.clone()).await {
+                Ok(_) => {}
+                Err(StartError::Rejected(message)) => {
+                    eprintln!("scheduler start {task_id}: {message}")
+                }
+                Err(StartError::Failed(message)) => {
+                    eprintln!("scheduler start {task_id}: {message}");
+                    if let Err(e) = self.fail_task(&task_id, &emit).await {
+                        eprintln!("scheduler fail {task_id}: {e}");
+                    }
+                }
             }
         }
         let statuses = scheduler::decide(&self.snapshot(detect).await?).statuses;
@@ -232,10 +292,12 @@ impl AppState {
         F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
     {
         let _guard = self.admission.lock().await;
-        self.start_run(task_id, emit).await
+        self.start_run(task_id, emit)
+            .await
+            .map_err(|e| e.to_string())
     }
 
-    async fn start_run<F>(&self, task_id: String, emit: F) -> Result<Run, String>
+    async fn start_run<F>(&self, task_id: String, emit: F) -> Result<Run, StartError>
     where
         F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
     {
@@ -243,10 +305,10 @@ impl AppState {
             .store
             .get_task(task_id.clone())
             .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("task not found: {task_id}"))?;
+            .map_err(|e| StartError::Failed(e.to_string()))?
+            .ok_or_else(|| StartError::Rejected(format!("task not found: {task_id}")))?;
         if scheduler::resolve(&task.engine) != EngineId::Claude {
-            return Err("engine unavailable".into());
+            return Err(StartError::Failed("engine unavailable".into()));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         let started_at = (self.clock)()
@@ -258,10 +320,16 @@ impl AppState {
             .claim_task_and_insert_run(task_id.clone(), run_id.clone(), started_at.clone())
             .await
             .map_err(|e| match e {
-                crate::store::StoreError::NotFound(_) => format!("task not found: {task_id}"),
-                crate::store::StoreError::Invalid(msg) => msg,
-                other => other.to_string(),
+                crate::store::StoreError::ClaimRejected(msg) => StartError::Rejected(msg),
+                crate::store::StoreError::NotFound(_) => {
+                    StartError::Rejected(format!("task not found: {task_id}"))
+                }
+                other => StartError::Failed(other.to_string()),
             })?;
+
+        if let Ok(val) = serde_json::to_value(&task) {
+            emit(TASK_UPDATE, val);
+        }
 
         let engine_id = run.engine;
         let engine = match &self.claude_program {
@@ -284,28 +352,36 @@ impl AppState {
                         run_id: run_id.clone(),
                         message: err_msg.clone(),
                     })
-                    .map_err(|e| e.to_string())?,
+                    .map_err(|e| StartError::Failed(e.to_string()))?,
                 );
                 let finished_at = (self.clock)()
                     .to_utc()
                     .to_rfc3339_opts(SecondsFormat::Secs, true);
-                let _ = self
+                match self
                     .store
                     .finish_run(
                         run_id,
-                        finished_at.clone(),
+                        finished_at,
                         crate::contract::ExitReason::Failed,
                         Usage::default(),
                     )
-                    .await;
-                return Err(err_msg);
+                    .await
+                {
+                    Ok(task) => {
+                        if let Ok(val) = serde_json::to_value(&task) {
+                            emit(TASK_UPDATE, val);
+                        }
+                    }
+                    Err(e) => eprintln!("finish run: {e}"),
+                }
+                return Err(StartError::Failed(err_msg));
             }
         };
 
         let (kill_tx, mut kill_rx) = oneshot::channel();
         self.active_runs
             .lock()
-            .map_err(|e| e.to_string())?
+            .map_err(|e| StartError::Failed(e.to_string()))?
             .insert(run_id.clone(), kill_tx);
 
         let store = self.store.clone();
@@ -369,9 +445,17 @@ impl AppState {
             let reason = engine_run.wait().await;
             let finished_at = clock().to_utc().to_rfc3339_opts(SecondsFormat::Secs, true);
 
-            let _ = store
-                .finish_run(run_id_bg.clone(), finished_at.clone(), reason, latest_usage)
-                .await;
+            match store
+                .finish_run(run_id_bg.clone(), finished_at, reason, latest_usage)
+                .await
+            {
+                Ok(task) => {
+                    if let Ok(val) = serde_json::to_value(&task) {
+                        emit(TASK_UPDATE, val);
+                    }
+                }
+                Err(e) => eprintln!("finish run {run_id_bg}: {e}"),
+            }
 
             if let Ok(mut lock) = active_runs.lock() {
                 lock.remove(&run_id_bg);
@@ -395,7 +479,9 @@ pub async fn add_task(
     engine: EngineChoice,
     state: State<'_, AppState>,
 ) -> Result<Task, String> {
-    let now = now_rfc3339();
+    let now = (state.clock)()
+        .to_utc()
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     let task = Task {
         id: uuid::Uuid::new_v4().to_string(),
         prompt,
@@ -420,9 +506,12 @@ pub async fn update_task(
     state: State<'_, AppState>,
 ) -> Result<Task, String> {
     let _guard = state.admission.lock().await;
+    let now = (state.clock)()
+        .to_utc()
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
     state
         .store
-        .update_task(id, prompt, folder, size, engine, status, now_rfc3339())
+        .update_task(id, prompt, folder, size, engine, status, now)
         .await
         .map_err(|e| e.to_string())
 }

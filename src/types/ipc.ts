@@ -95,6 +95,12 @@ export function listenRunEvent(
   return listen<RunEvent>("run_event", (event) => handler(event.payload));
 }
 
+export function listenTaskUpdate(
+  handler: (payload: Task) => void,
+): Promise<UnlistenFn> {
+  return listen<Task>("task_update", (event) => handler(event.payload));
+}
+
 export function listenMeterUpdate(
   handler: (payload: MeterState) => void,
 ): Promise<UnlistenFn> {

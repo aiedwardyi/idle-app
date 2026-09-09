@@ -46,6 +46,9 @@ pub enum StoreError {
     NotFound(String),
     #[error("invalid: {0}")]
     Invalid(String),
+    /// A start that lost a race, not a broken store. Callers branch on this instead of matching message text.
+    #[error("{0}")]
+    ClaimRejected(String),
 }
 
 impl From<StoreError> for rusqlite::Error {
@@ -708,18 +711,21 @@ impl Store {
 
             // Only queued tasks are claimable, so the third limit hit cannot be silently re-run.
             if task.status != TaskStatus::Queued {
-                return Err(StoreError::Invalid(format!("task {task_id} is not queued")));
+                return Err(StoreError::ClaimRejected(format!("task {task_id} is not queued")));
             }
 
             let engine_id = crate::scheduler::resolve(&task.engine);
             let active: i64 = tx.query_row("SELECT COUNT(*) FROM runs WHERE finished_at IS NULL", [], |r| r.get(0))?;
             let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE engine = ?1 AND finished_at IS NULL)", [engine_id_to_str(engine_id)], |r| r.get(0))?;
-            if busy || active >= i64::from(load_schedule(&tx)?.max_concurrent) {
-                return Err(StoreError::Invalid("engine already running or concurrency full".into()));
+            if busy {
+                return Err(StoreError::ClaimRejected("engine already running".into()));
+            }
+            if active >= i64::from(load_schedule(&tx)?.max_concurrent) {
+                return Err(StoreError::ClaimRejected("concurrency full".into()));
             }
             let now = chrono::DateTime::parse_from_rfc3339(&started_at).map_err(|e| StoreError::Invalid(e.to_string()))?;
             if load_cooldowns(&tx, &started_at)?.iter().any(|(engine, until)| *engine == engine_id && chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|t| t > now)) {
-                return Err(StoreError::Invalid("engine cooldown".into()));
+                return Err(StoreError::ClaimRejected("engine cooldown".into()));
             }
 
             let run = Run {
@@ -754,8 +760,18 @@ impl Store {
                 ],
             )?;
 
+            // Re-read so callers publish the claimed row, not the queued one they matched on.
+            let mut stmt = tx.prepare(&format!("{SELECT_TASK} WHERE id = ?1"))?;
+            let mut rows = stmt.query_map(params![run.task_id], row_to_task)?;
+            let claimed = rows
+                .next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task {}", run.task_id)))?;
+            drop(rows);
+            drop(stmt);
+
             tx.commit()?;
-            Ok((task, run))
+            Ok((claimed, run))
         })
         .await
     }
@@ -788,7 +804,7 @@ impl Store {
         finished_at: String,
         exit_reason: ExitReason,
         usage: Usage,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Task, StoreError> {
         self.run(move |conn| {
             let tx = conn.transaction()?;
             let n = tx.execute(
@@ -813,8 +829,16 @@ impl Store {
                 _ => TaskStatus::Failed,
             };
             tx.execute("UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = (SELECT task_id FROM runs WHERE id = ?3)", params![status_to_str(status), finished_at, run_id])?;
+            let mut stmt = tx.prepare(&format!("{SELECT_TASK} WHERE id = (SELECT task_id FROM runs WHERE id = ?1)"))?;
+            let mut rows = stmt.query_map(params![run_id], row_to_task)?;
+            let task = rows
+                .next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task for run {run_id}")))?;
+            drop(rows);
+            drop(stmt);
             tx.commit()?;
-            Ok(())
+            Ok(task)
         })
         .await
     }
@@ -1443,7 +1467,7 @@ mod tests {
             .claim_task_and_insert_run("t1".into(), "r2".into(), "2026-09-04T01:00:00Z".into())
             .await
             .unwrap_err();
-        assert!(matches!(err, StoreError::Invalid(_)));
+        assert!(matches!(err, StoreError::ClaimRejected(_)));
     }
 
     #[tokio::test]

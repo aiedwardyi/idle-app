@@ -38,7 +38,7 @@ Every known meter window must have `remainingPct >= reservePct + margin`: S 5, M
 
 FIFO is by `createdAt`, with `id` breaking ties. Auto resolves to Claude. Missing adapters, missing binaries, and signed-out engines wait. Detection is cached for five minutes, and is not probed at all while auto is off or no task is queued. One unfinished run per engine, and at most `maxConcurrent` overall, including manual starts. Click, `run_next`, and auto share one start path and atomic database claim. `run_next` ignores auto, quiet hours, idle, and reserve, but honors concurrency and cooldown, as does the click.
 
-`SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable | ready`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. A task that clears every gate reports waiting/ready: never waiting/noTasks, and never running/busy before its run exists. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
+`SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable | ready`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. When `state` is `off` the `reason` carries no meaning and the UI renders the off state alone: `noTasks` there says nothing about the queue, which may hold tasks. A task that clears every gate reports waiting/ready: never waiting/noTasks, and never running/busy before its run exists. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
 
 A database owner holds an OS file lock before startup reconciliation. Another live instance cannot open the same database. Deleting a task with an unfinished run returns an error.
 
@@ -48,6 +48,8 @@ A vendor zero with no deadline expires. A `source: vendor` window at 0% whose `r
 
 Only a queued task is claimable. Every start path rejects any other status, so the third limit hit cannot be silently re-run.
 
+A start that loses a race is not a failure. A claim rejected because the task is no longer queued, the engine is already running, concurrency is full, or the engine is in cooldown leaves the task untouched for the next tick to re-decide. Any other start failure is durable, so auto marks the task `failed` rather than leaving it queued and reporting `waiting/ready` on every tick forever, which the status dedup would then suppress. The two are distinguished by type, never by matching error text. A run that already recorded a terminal status keeps it: auto only marks a task the failed start left queued or running.
+
 | From                                    | Trigger                                 | To        |
 | --------------------------------------- | --------------------------------------- | --------- |
 | queued                                  | Claimed by any start path               | running   |
@@ -56,6 +58,7 @@ Only a queued task is claimable. Every start path rejects any other status, so t
 | running                                 | limitHit, third or later run hit        | failed    |
 | running                                 | failed or timeout                       | failed    |
 | running                                 | cancelled                               | discarded |
+| queued or running                       | Auto start failed durably               | failed    |
 | failed, done, or discarded              | Retry must requeue before `run_now`     | queued    |
 | any task with an unfinished run at boot | Reconcile run as failed, finishedAt now | failed    |
 
@@ -103,6 +106,9 @@ Invoke args are the object in Args. Return is the Rust/JSON value. Command and e
 | `meter_update`    | `MeterState`      |
 | `engine_status`   | `EngineStatus`    |
 | `schedule_status` | `SchedulerStatus` |
+| `task_update`     | `Task`            |
+
+`task_update` carries one task whenever something other than the caller changed its status: an auto start claiming it, a run settling to `done`, `failed`, or `discarded`, and a limit hit requeueing it or failing it on the third strike. Without it a task the scheduler ran overnight still reads `queued` until the app reloads, because `list_tasks` is fetched once on mount. The payload is always the row as persisted, read back after the write, so the UI never renders a status the database went on to reject. Startup reconciliation is the one status change with no event: it completes while the database opens, before any listener exists, so its result arrives in the first `list_tasks` instead.
 
 ## Schema
 

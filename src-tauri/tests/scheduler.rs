@@ -1,6 +1,6 @@
 use chrono::DateTime;
 use idle_app_lib::contract::*;
-use idle_app_lib::ipc::{AppState, METER_UPDATE, SCHEDULE_STATUS};
+use idle_app_lib::ipc::{AppState, METER_UPDATE, SCHEDULE_STATUS, TASK_UPDATE};
 use idle_app_lib::scheduler::{decide, within_operating_hours, Idle, Snapshot};
 use idle_app_lib::store::Store;
 use serial_test::serial;
@@ -798,19 +798,93 @@ async fn terminal_outcomes_do_not_retry() {
         ("cancel", ExitReason::Cancelled, TaskStatus::Discarded),
     ] {
         store.add_task(task(id, EngineChoice::Auto)).await.unwrap();
-        store
+        let (claimed, _) = store
             .claim_task_and_insert_run(id.into(), id.into(), NOW.into())
             .await
             .unwrap();
-        store
+        assert_eq!(claimed.status, TaskStatus::Running);
+        let finished = store
             .finish_run(id.into(), NOW.into(), reason, Usage::default())
             .await
             .unwrap();
+        assert_eq!(finished.status, expected);
         assert_eq!(
             store.get_task(id.into()).await.unwrap().unwrap().status,
             expected
         );
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn background_status_changes_emit_task_update() {
+    let state = fake_state().await;
+    state
+        .store
+        .add_task(task("a", EngineChoice::Auto))
+        .await
+        .unwrap();
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let sink = updates.clone();
+    state
+        .scheduler_tick(move |name, payload| {
+            if name == TASK_UPDATE {
+                sink.lock().unwrap().push(payload);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(updates.lock().unwrap()[0]["status"], "running");
+
+    wait_finished(&state.store, "a").await;
+    // finish_run writes before it emits, so the settling event can trail the run record.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if updates.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("finish emits task_update");
+    let last = updates.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last["id"], "a");
+    assert_eq!(last["status"], "done");
+}
+
+#[tokio::test]
+#[serial]
+async fn durable_start_failure_fails_the_task_instead_of_stalling() {
+    let state = fake_state().await;
+    let mut t = task("a", EngineChoice::Auto);
+    t.folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("no-such-folder")
+        .to_string_lossy()
+        .into_owned();
+    state.store.add_task(t).await.unwrap();
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let sink = updates.clone();
+    state
+        .scheduler_tick(move |name, payload| {
+            if name == TASK_UPDATE {
+                sink.lock().unwrap().push(payload);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .store
+            .get_task("a".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    assert_eq!(updates.lock().unwrap().last().unwrap()["status"], "failed");
 }
 
 #[tokio::test]
