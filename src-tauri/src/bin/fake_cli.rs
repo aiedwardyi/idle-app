@@ -86,12 +86,17 @@ fn claude_auth_status() {
 /// - anything else echoes the full argv as a `system` line so a test can
 ///   prove the prompt survived the trip through the OS.
 fn claude_print_run(args: &[String]) {
-    let prompt = args
+    let mut prompt = args
         .iter()
         .position(|arg| arg == "--")
         .and_then(|i| args.get(i + 1))
         .cloned()
         .unwrap_or_default();
+    if let Some(rest) = prompt.strip_prefix("delay ") {
+        let (millis, rest) = rest.split_once(' ').expect("delay <millis> <prompt>");
+        std::thread::sleep(std::time::Duration::from_millis(millis.parse().unwrap()));
+        prompt = rest.into();
+    }
     if prompt == "hang" {
         say(r#"{"type":"system","subtype":"init","session_id":"fake"}"#);
         sleep_forever();
