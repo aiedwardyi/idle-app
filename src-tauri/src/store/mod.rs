@@ -269,6 +269,7 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if version < 4 {
         conn.execute("UPDATE schema_version SET version = 4 WHERE id = 1", [])?;
     }
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_limit_hits_time ON limit_hits (julianday(COALESCE(resets_at, hit_at)))", [])?;
     Ok(())
 }
 
@@ -286,9 +287,9 @@ fn load_schedule(conn: &Connection) -> Result<Schedule, StoreError> {
     Ok(schedule)
 }
 
-fn load_cooldowns(conn: &Connection) -> Result<Vec<(EngineId, String)>, StoreError> {
-    let mut stmt = conn.prepare("SELECT engine, hit_at, resets_at FROM limit_hits")?;
-    let rows = stmt.query_map([], |r| {
+fn load_cooldowns(conn: &Connection, now: &str) -> Result<Vec<(EngineId, String)>, StoreError> {
+    let mut stmt = conn.prepare("SELECT engine, hit_at, resets_at FROM limit_hits WHERE julianday(COALESCE(resets_at, hit_at)) >= julianday(?1) - ?2 / 1440.0")?;
+    let rows = stmt.query_map(params![now, COOLDOWN_MINUTES], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -506,6 +507,7 @@ fn fold_run_event(
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    owner: Option<Arc<std::fs::File>>,
 }
 
 impl Store {
@@ -514,7 +516,20 @@ impl Store {
     }
 
     pub fn open_at(path: impl AsRef<Path>, now: &str) -> Result<Self, StoreError> {
-        Self::init(Connection::open(path)?, now)
+        let path = path.as_ref();
+        let owner = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        owner
+            .try_lock()
+            .map_err(|e| StoreError::Lock(format!("database already in use: {e}")))?;
+        let mut store = Self::init(Connection::open(path)?, now)?;
+        store.owner = Some(Arc::new(owner));
+        Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
@@ -531,6 +546,7 @@ impl Store {
         reconcile(&mut conn, now)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            owner: None,
         })
     }
 
@@ -540,7 +556,9 @@ impl Store {
         R: Send + 'static,
     {
         let conn = self.conn.clone();
+        let owner = self.owner.clone();
         tokio::task::spawn_blocking(move || {
+            let _owner = owner;
             let mut guard = conn.lock().map_err(|e| StoreError::Lock(e.to_string()))?;
             f(&mut guard)
         })
@@ -571,8 +589,8 @@ impl Store {
         }).await
     }
 
-    pub async fn cooldowns(&self) -> Result<Vec<(EngineId, String)>, StoreError> {
-        self.run(|conn| load_cooldowns(conn)).await
+    pub async fn cooldowns(&self, now: String) -> Result<Vec<(EngineId, String)>, StoreError> {
+        self.run(move |conn| load_cooldowns(conn, &now)).await
     }
 
     pub async fn get_task(&self, id: String) -> Result<Option<Task>, StoreError> {
@@ -648,6 +666,14 @@ impl Store {
     pub async fn delete_task(&self, id: String) -> Result<(), StoreError> {
         self.run(move |conn| {
             let tx = conn.transaction()?;
+            let busy: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE task_id = ?1 AND finished_at IS NULL)",
+                [&id],
+                |r| r.get(0),
+            )?;
+            if busy {
+                return Err(StoreError::Invalid("cannot delete a running task".into()));
+            }
             tx.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
             tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
             tx.commit()?;
@@ -684,7 +710,7 @@ impl Store {
                 return Err(StoreError::Invalid("engine already running or concurrency full".into()));
             }
             let now = chrono::DateTime::parse_from_rfc3339(&started_at).map_err(|e| StoreError::Invalid(e.to_string()))?;
-            if load_cooldowns(&tx)?.iter().any(|(engine, until)| *engine == engine_id && chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|t| t > now)) {
+            if load_cooldowns(&tx, &started_at)?.iter().any(|(engine, until)| *engine == engine_id && chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|t| t > now)) {
                 return Err(StoreError::Invalid("engine cooldown".into()));
             }
 
@@ -984,6 +1010,16 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(store2.delete_task("task-1".into()).await.is_err());
+        store2
+            .finish_run(
+                "r-task-1".into(),
+                "2026-09-04T01:00:00Z".into(),
+                ExitReason::Ok,
+                Usage::default(),
+            )
+            .await
+            .unwrap();
         store2.delete_task("task-1".into()).await.unwrap();
         let empty = store2.list_tasks().await.unwrap();
         assert!(empty.is_empty());

@@ -68,3 +68,5 @@ CREATE TABLE IF NOT EXISTS limit_hits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, window);
+
+CREATE INDEX IF NOT EXISTS idx_limit_hits_time ON limit_hits (julianday(COALESCE(resets_at, hit_at)));

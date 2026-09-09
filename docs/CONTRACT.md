@@ -40,6 +40,8 @@ FIFO is by `createdAt`, with `id` breaking ties. Auto resolves to Claude. Missin
 
 `SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
 
+A database owner holds an OS file lock before startup reconciliation. Another live instance cannot open the same database. Deleting a task with an unfinished run returns an error.
+
 A limit-hit run requeues its task on the first two hits; the third fails it. The engine pauses until the hit's reset, or hit time plus 60 minutes if absent. Cooldowns are derived from append-only `limit_hits` across restart. No other terminal outcome retries automatically.
 
 | From                                    | Trigger                                 | To        |
@@ -101,7 +103,7 @@ Invoke args are the object in Args. Return is the Rust/JSON value. Command and e
 
 SQLite tables: `tasks`, `runs`, `meter_state`, `limit_hits`, `schedule`, `schema_version`.
 
-Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
+Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`, `limit_hits(julianday(COALESCE(resets_at, hit_at)))`. Cooldown reads use the time index to exclude expired history without pruning.
 
 `limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. `window` is nullable and holds `limitHit.window`, so a hit with no window evidence is still calibration ground truth. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
 

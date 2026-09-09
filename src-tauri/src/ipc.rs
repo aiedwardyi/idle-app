@@ -47,8 +47,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    async fn snapshot(&self) -> Result<Snapshot, String> {
-        let detect = self.detect_engines().await?;
+    async fn snapshot(&self, detect: Vec<EngineStatus>) -> Result<Snapshot, String> {
         let now = (self.clock)();
         let tasks = self.store.list_tasks().await.map_err(|e| e.to_string())?;
         let active = self
@@ -71,7 +70,11 @@ impl AppState {
                 .await
                 .map_err(|e| e.to_string())?,
             detect,
-            cooldowns: self.store.cooldowns().await.map_err(|e| e.to_string())?,
+            cooldowns: self
+                .store
+                .cooldowns(now.to_rfc3339())
+                .await
+                .map_err(|e| e.to_string())?,
             schedule: self.store.get_schedule().await.map_err(|e| e.to_string())?,
         })
     }
@@ -85,7 +88,7 @@ impl AppState {
     }
 
     pub async fn schedule_status(&self) -> Result<Vec<SchedulerStatus>, String> {
-        Ok(scheduler::decide(&self.snapshot().await?).statuses)
+        Ok(scheduler::decide(&self.snapshot(self.detect_engines().await?).await?).statuses)
     }
 
     pub async fn run_next<F>(&self, engine: EngineId, emit: F) -> Result<Run, String>
@@ -109,6 +112,7 @@ impl AppState {
     where
         F: Fn(&str, serde_json::Value) + Clone + Send + Sync + 'static,
     {
+        let detect = self.detect_engines().await?;
         let _guard = self.admission.lock().await;
         let now = (self.clock)()
             .to_utc()
@@ -124,13 +128,13 @@ impl AppState {
                 serde_json::to_value(meter).map_err(|e| e.to_string())?,
             );
         }
-        let decision = scheduler::decide(&self.snapshot().await?);
+        let decision = scheduler::decide(&self.snapshot(detect.clone()).await?);
         for task_id in decision.starts {
             if let Err(message) = self.start_run(task_id.clone(), emit.clone()).await {
                 eprintln!("scheduler start {task_id}: {message}");
             }
         }
-        let statuses = self.schedule_status().await?;
+        let statuses = scheduler::decide(&self.snapshot(detect).await?).statuses;
         let mut previous = self.statuses.lock().map_err(|e| e.to_string())?;
         for status in &statuses {
             if !previous.contains(status) {

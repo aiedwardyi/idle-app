@@ -37,7 +37,7 @@ pub fn resolve(engine: &EngineChoice) -> EngineId {
     }
 }
 
-pub fn quiet_hours(schedule: &Schedule, minute: u16) -> bool {
+pub fn within_operating_hours(schedule: &Schedule, minute: u16) -> bool {
     let (Some(start), Some(end)) = (
         minute_of_day(&schedule.quiet_start),
         minute_of_day(&schedule.quiet_end),
@@ -95,7 +95,10 @@ pub fn decide(s: &Snapshot) -> Decision {
                 .any(|d| d.engine == engine && d.detect.installed && d.detect.signed_in)
             {
                 SchedulerReason::EngineUnavailable
-            } else if !quiet_hours(&s.schedule, (s.now.hour() * 60 + s.now.minute()) as u16) {
+            } else if !within_operating_hours(
+                &s.schedule,
+                (s.now.hour() * 60 + s.now.minute()) as u16,
+            ) {
                 SchedulerReason::QuietHours
             } else if matches!(s.idle, Idle::Minutes(n) if n < u32::from(s.schedule.idle_minutes)) {
                 SchedulerReason::NotIdle

@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use idle_app_lib::contract::*;
 use idle_app_lib::ipc::{AppState, METER_UPDATE, SCHEDULE_STATUS};
-use idle_app_lib::scheduler::{decide, quiet_hours, Idle, Snapshot};
+use idle_app_lib::scheduler::{decide, within_operating_hours, Idle, Snapshot};
 use idle_app_lib::store::Store;
 use serial_test::serial;
 use std::path::PathBuf;
@@ -63,14 +63,14 @@ fn r1_quiet_hours_wrap_boundaries_all_day_and_off() {
         (7 * 60, false),
         (23 * 60, true),
     ] {
-        assert_eq!(quiet_hours(&s.schedule, minute), expected);
+        assert_eq!(within_operating_hours(&s.schedule, minute), expected);
     }
     s.schedule.quiet_end = s.schedule.quiet_start.clone();
     for minute in 0..1440 {
-        assert!(quiet_hours(&s.schedule, minute));
+        assert!(within_operating_hours(&s.schedule, minute));
     }
     s.schedule.enabled = false;
-    assert!(!quiet_hours(&s.schedule, 23 * 60));
+    assert!(!within_operating_hours(&s.schedule, 23 * 60));
     assert!(decide(&s).starts.is_empty());
     assert_eq!(decide(&s).statuses[0].state, SchedulerState::Off);
 }
@@ -86,6 +86,45 @@ fn r1_local_offset_and_dst_repeated_hour_use_wall_time() {
         s.now = DateTime::parse_from_rfc3339(now).unwrap();
         assert_eq!(decide(&s).starts, ["a"]);
     }
+}
+
+#[test]
+fn r1_daytime_blocks_in_decision() {
+    let mut s = snapshot();
+    s.now = DateTime::parse_from_rfc3339("2026-09-02T10:00:00Z").unwrap();
+    let d = decide(&s);
+    assert!(d.starts.is_empty());
+    assert_eq!(d.statuses[0].state, SchedulerState::Waiting);
+    assert_eq!(d.statuses[0].reason, SchedulerReason::QuietHours);
+}
+
+#[tokio::test]
+async fn cooldown_query_filters_history_with_offsets_and_uses_index() {
+    let store = Store::open_in_memory().unwrap();
+    for (hit, reset) in [
+        ("2026-09-01T00:00:00Z", None),
+        (NOW, None),
+        ("2026-09-01T00:00:00Z", Some("2026-09-02T20:00:00-05:00")),
+    ] {
+        store
+            .apply_run_event(
+                EngineId::Claude,
+                RunEvent::LimitHit {
+                    run_id: "r".into(),
+                    window: None,
+                    resets_at: reset.map(str::to_string),
+                },
+                hit.into(),
+                Usage::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let rows = store.cooldowns(NOW.into()).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|(_, t)| t == "2026-09-02T20:00:00-05:00"));
+    let plan: String = store.run(|c| Ok(c.query_row("EXPLAIN QUERY PLAN SELECT * FROM limit_hits WHERE julianday(COALESCE(resets_at, hit_at)) >= julianday(?1) - ?2 / 1440.0", rusqlite::params![NOW, COOLDOWN_MINUTES], |r| r.get(3))?)).await.unwrap();
+    assert!(plan.contains("idx_limit_hits_time"), "{plan}");
 }
 
 #[test]
@@ -242,7 +281,7 @@ async fn r6_limit_hit_requeues_twice_then_fails_and_cooldown_survives_restart() 
     drop(store);
     let store = Store::open(&path).unwrap();
     let mut s = snapshot();
-    s.cooldowns = store.cooldowns().await.unwrap();
+    s.cooldowns = store.cooldowns(NOW.into()).await.unwrap();
     let status = decide(&s).statuses.remove(0);
     assert_eq!(status.state, SchedulerState::Paused);
     assert_eq!(
@@ -263,7 +302,7 @@ async fn r6_limit_hit_requeues_twice_then_fails_and_cooldown_survives_restart() 
         )
         .await
         .unwrap();
-    s.cooldowns = store.cooldowns().await.unwrap();
+    s.cooldowns = store.cooldowns(NOW.into()).await.unwrap();
     assert_eq!(decide(&s).statuses[0].until.as_deref(), Some(reset));
     assert!(store
         .claim_task_and_insert_run("a".into(), "r4".into(), NOW.into())
@@ -286,6 +325,10 @@ async fn r7_restart_reconciles_unfinished_run_and_task() {
         .claim_task_and_insert_run("a".into(), "r".into(), NOW.into())
         .await
         .unwrap();
+    assert!(Store::open(&path).is_err());
+    assert!(store.list_runs(None).await.unwrap()[0].finished_at.is_none());
+    assert!(store.delete_task("a".into()).await.is_err());
+    assert!(store.list_runs(None).await.unwrap()[0].finished_at.is_none());
     drop(store);
     let store = Store::open_at(&path, NOW).unwrap();
     let run = store.list_runs(None).await.unwrap().remove(0);
