@@ -3,7 +3,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 4);
+
+CREATE TABLE IF NOT EXISTS schedule (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    config TEXT
+);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,

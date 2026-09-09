@@ -1,6 +1,6 @@
 use crate::contract::{
     default_windows, EngineChoice, EngineId, ExitReason, LimitWindowKind, MeterSource, MeterState,
-    Run, RunEvent, Task, TaskSize, TaskStatus, Usage,
+    Run, RunEvent, Schedule, Task, TaskSize, TaskStatus, Usage, COOLDOWN_MINUTES, MAX_LIMIT_HITS,
 };
 use crate::meter::{apply, refresh, seed};
 use rusqlite::{params, Connection, Row};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// v1 -> v2: `limit_hits.window` becomes nullable. SQLite cannot drop a
 /// NOT NULL in place, so the table is rebuilt; nothing references it, so
@@ -260,6 +260,64 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
         }
         conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
     }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schedule (id INTEGER PRIMARY KEY CHECK (id = 1))",
+    )?;
+    if !table_has_column(conn, "schedule", "config")? {
+        conn.execute("ALTER TABLE schedule ADD COLUMN config TEXT", [])?;
+    }
+    if version < 4 {
+        conn.execute("UPDATE schema_version SET version = 4 WHERE id = 1", [])?;
+    }
+    Ok(())
+}
+
+fn load_schedule(conn: &Connection) -> Result<Schedule, StoreError> {
+    use rusqlite::OptionalExtension;
+    let json: Option<String> = conn
+        .query_row("SELECT config FROM schedule WHERE id = 1", [], |r| r.get(0))
+        .optional()?
+        .flatten();
+    let schedule = json
+        .map(|s| serde_json::from_str::<Schedule>(&s))
+        .transpose()?
+        .unwrap_or_default();
+    schedule.validate().map_err(StoreError::Invalid)?;
+    Ok(schedule)
+}
+
+fn load_cooldowns(conn: &Connection) -> Result<Vec<(EngineId, String)>, StoreError> {
+    let mut stmt = conn.prepare("SELECT engine, hit_at, resets_at FROM limit_hits")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut cooldowns = Vec::new();
+    for row in rows {
+        let (engine, hit, reset) = row?;
+        let until = reset.or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(&hit)
+                .ok()
+                .map(|t| (t + chrono::Duration::minutes(COOLDOWN_MINUTES)).to_rfc3339())
+        });
+        if let Some(until) = until {
+            cooldowns.push((str_to_engine_id(&engine)?, until));
+        }
+    }
+    Ok(cooldowns)
+}
+
+fn reconcile(conn: &mut Connection, now: &str) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE tasks SET status = 'failed', updated_at = ?1 WHERE id IN (SELECT task_id FROM runs WHERE finished_at IS NULL)", [now])?;
+    tx.execute(
+        "UPDATE runs SET exit_reason = 'failed', finished_at = ?1 WHERE finished_at IS NULL",
+        [now],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -452,20 +510,25 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        Self::init(Connection::open(path)?)
+        Self::open_at(path, &now_rfc3339())
+    }
+
+    pub fn open_at(path: impl AsRef<Path>, now: &str) -> Result<Self, StoreError> {
+        Self::init(Connection::open(path)?, now)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, &now_rfc3339())
     }
 
-    fn init(conn: Connection) -> Result<Self, StoreError> {
+    fn init(mut conn: Connection, now: &str) -> Result<Self, StoreError> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         seed_default_windows(&conn)?;
+        reconcile(&mut conn, now)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -494,6 +557,22 @@ impl Store {
             Ok(tasks)
         })
         .await
+    }
+
+    pub async fn get_schedule(&self) -> Result<Schedule, StoreError> {
+        self.run(|conn| load_schedule(conn)).await
+    }
+
+    pub async fn set_schedule(&self, schedule: Schedule) -> Result<(), StoreError> {
+        schedule.validate().map_err(StoreError::Invalid)?;
+        self.run(move |conn| {
+            conn.execute("INSERT INTO schedule (id, config) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET config = excluded.config", [serde_json::to_string(&schedule)?])?;
+            Ok(())
+        }).await
+    }
+
+    pub async fn cooldowns(&self) -> Result<Vec<(EngineId, String)>, StoreError> {
+        self.run(|conn| load_cooldowns(conn)).await
     }
 
     pub async fn get_task(&self, id: String) -> Result<Option<Task>, StoreError> {
@@ -598,10 +677,16 @@ impl Store {
                 return Err(StoreError::Invalid(format!("task {task_id} is already running")));
             }
 
-            let engine_id = match task.engine {
-                EngineChoice::Fixed(id) => id,
-                EngineChoice::Auto => EngineId::Claude,
-            };
+            let engine_id = crate::scheduler::resolve(&task.engine);
+            let active: i64 = tx.query_row("SELECT COUNT(*) FROM runs WHERE finished_at IS NULL", [], |r| r.get(0))?;
+            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE engine = ?1 AND finished_at IS NULL)", [engine_id_to_str(engine_id)], |r| r.get(0))?;
+            if busy || active >= i64::from(load_schedule(&tx)?.max_concurrent) {
+                return Err(StoreError::Invalid("engine already running or concurrency full".into()));
+            }
+            let now = chrono::DateTime::parse_from_rfc3339(&started_at).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            if load_cooldowns(&tx)?.iter().any(|(engine, until)| *engine == engine_id && chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|t| t > now)) {
+                return Err(StoreError::Invalid("engine cooldown".into()));
+            }
 
             let run = Run {
                 id: run_id,
@@ -671,7 +756,8 @@ impl Store {
         usage: Usage,
     ) -> Result<(), StoreError> {
         self.run(move |conn| {
-            let n = conn.execute(
+            let tx = conn.transaction()?;
+            let n = tx.execute(
                 "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6",
                 params![
                     finished_at,
@@ -685,6 +771,15 @@ impl Store {
             if n == 0 {
                 return Err(StoreError::NotFound(format!("run {run_id}")));
             }
+            let hits: usize = tx.query_row("SELECT COUNT(*) FROM runs WHERE task_id = (SELECT task_id FROM runs WHERE id = ?1) AND exit_reason = 'limitHit'", [&run_id], |r| r.get(0))?;
+            let status = match exit_reason {
+                ExitReason::Ok => TaskStatus::Done,
+                ExitReason::Cancelled => TaskStatus::Discarded,
+                ExitReason::LimitHit if hits < MAX_LIMIT_HITS => TaskStatus::Queued,
+                _ => TaskStatus::Failed,
+            };
+            tx.execute("UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = (SELECT task_id FROM runs WHERE id = ?3)", params![status_to_str(status), finished_at, run_id])?;
+            tx.commit()?;
             Ok(())
         })
         .await

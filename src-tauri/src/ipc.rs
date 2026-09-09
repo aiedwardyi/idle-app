@@ -1,10 +1,12 @@
 use crate::contract::{
-    EngineChoice, EngineId, EngineStatus, MeterState, Run, RunEvent, Task, TaskSize, TaskStatus,
-    Usage,
+    EngineChoice, EngineId, EngineStatus, MeterState, Run, RunEvent, Schedule, SchedulerStatus,
+    Task, TaskSize, TaskStatus, Usage, DETECT_CACHE_SECS, TICK_SECS,
 };
 use crate::engines::claude::ClaudeEngine;
 use crate::engines::{Engine, RunCtx};
+use crate::scheduler::{self, Idle, Snapshot};
 use crate::store::{now_rfc3339, Store};
+use chrono::{DateTime, FixedOffset, SecondsFormat};
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -23,6 +25,12 @@ pub const LIST_RUNS: &str = "list_runs";
 pub const GET_METERS: &str = "get_meters";
 pub const GET_ENGINES: &str = "get_engines";
 
+pub const GET_SCHEDULE: &str = "get_schedule";
+pub const SET_SCHEDULE: &str = "set_schedule";
+pub const GET_SCHEDULE_STATUS: &str = "get_schedule_status";
+pub const RUN_NEXT: &str = "run_next";
+pub const SCHEDULE_STATUS: &str = "schedule_status";
+
 pub const RUN_EVENT: &str = "run_event";
 pub const METER_UPDATE: &str = "meter_update";
 pub const ENGINE_STATUS: &str = "engine_status";
@@ -31,30 +39,151 @@ pub struct AppState {
     pub store: Store,
     pub active_runs: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     pub claude_program: Option<OsString>,
+    pub clock: Arc<dyn Fn() -> DateTime<FixedOffset> + Send + Sync>,
+    pub idle: Arc<dyn Fn() -> Idle + Send + Sync>,
+    admission: tokio::sync::Mutex<()>,
+    detect_cache: tokio::sync::Mutex<Option<(std::time::Instant, Vec<EngineStatus>)>>,
+    statuses: Mutex<Vec<SchedulerStatus>>,
 }
 
 impl AppState {
+    async fn snapshot(&self) -> Result<Snapshot, String> {
+        let detect = self.detect_engines().await?;
+        let now = (self.clock)();
+        let tasks = self.store.list_tasks().await.map_err(|e| e.to_string())?;
+        let active = self
+            .store
+            .list_runs(None)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|r| r.finished_at.is_none())
+            .map(|r| r.engine)
+            .collect();
+        Ok(Snapshot {
+            tasks,
+            active,
+            now,
+            idle: (self.idle)(),
+            meters: self
+                .store
+                .get_meters_at(now.to_utc().to_rfc3339_opts(SecondsFormat::Secs, true))
+                .await
+                .map_err(|e| e.to_string())?,
+            detect,
+            cooldowns: self.store.cooldowns().await.map_err(|e| e.to_string())?,
+            schedule: self.store.get_schedule().await.map_err(|e| e.to_string())?,
+        })
+    }
+
+    pub async fn set_schedule(&self, schedule: Schedule) -> Result<(), String> {
+        let _guard = self.admission.lock().await;
+        self.store
+            .set_schedule(schedule)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn schedule_status(&self) -> Result<Vec<SchedulerStatus>, String> {
+        Ok(scheduler::decide(&self.snapshot().await?).statuses)
+    }
+
+    pub async fn run_next<F>(&self, engine: EngineId, emit: F) -> Result<Run, String>
+    where
+        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    {
+        let _guard = self.admission.lock().await;
+        let task = self
+            .store
+            .list_tasks()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|t| t.status == TaskStatus::Queued && scheduler::resolve(&t.engine) == engine)
+            .min_by_key(|t| (t.created_at.clone(), t.id.clone()))
+            .ok_or("no queued tasks")?;
+        self.start_run(task.id, emit).await
+    }
+
+    pub async fn scheduler_tick<F>(&self, emit: F) -> Result<(), String>
+    where
+        F: Fn(&str, serde_json::Value) + Clone + Send + Sync + 'static,
+    {
+        let _guard = self.admission.lock().await;
+        let now = (self.clock)()
+            .to_utc()
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        for meter in self
+            .store
+            .refresh_meters(now)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            emit(
+                METER_UPDATE,
+                serde_json::to_value(meter).map_err(|e| e.to_string())?,
+            );
+        }
+        let decision = scheduler::decide(&self.snapshot().await?);
+        for task_id in decision.starts {
+            if let Err(message) = self.start_run(task_id.clone(), emit.clone()).await {
+                eprintln!("scheduler start {task_id}: {message}");
+            }
+        }
+        let statuses = self.schedule_status().await?;
+        let mut previous = self.statuses.lock().map_err(|e| e.to_string())?;
+        for status in &statuses {
+            if !previous.contains(status) {
+                emit(
+                    SCHEDULE_STATUS,
+                    serde_json::to_value(status).map_err(|e| e.to_string())?,
+                );
+            }
+        }
+        *previous = statuses;
+        Ok(())
+    }
+
     pub fn new(store: Store) -> Self {
         Self {
             store,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
             claude_program: None,
+            clock: Arc::new(scheduler::local_now),
+            idle: Arc::new(scheduler::idle_probe),
+            admission: tokio::sync::Mutex::new(()),
+            detect_cache: tokio::sync::Mutex::new(None),
+            statuses: Mutex::new(Vec::new()),
         }
     }
 
     pub async fn detect_engines(&self) -> Result<Vec<EngineStatus>, String> {
+        let mut cache = self.detect_cache.lock().await;
+        if let Some((at, statuses)) = &*cache {
+            if at.elapsed().as_secs() < DETECT_CACHE_SECS {
+                return Ok(statuses.clone());
+            }
+        }
         let mut statuses = Vec::new();
         let engines: Vec<Box<dyn Engine>> = match &self.claude_program {
             Some(p) => vec![Box::new(ClaudeEngine::with_program(p))],
             None => crate::engines::registry(),
         };
         for engine in engines {
-            let detect = engine.detect().await.map_err(|e| e.to_string())?;
+            let detect = engine.detect().await.unwrap_or_else(|e| {
+                eprintln!("detect: {e}");
+                crate::contract::DetectInfo {
+                    installed: false,
+                    signed_in: false,
+                    version: None,
+                }
+            });
             statuses.push(EngineStatus {
                 engine: engine.id(),
                 detect,
             });
         }
+        *cache = Some((std::time::Instant::now(), statuses.clone()));
         Ok(statuses)
     }
 
@@ -73,8 +202,27 @@ impl AppState {
     where
         F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
     {
+        let _guard = self.admission.lock().await;
+        self.start_run(task_id, emit).await
+    }
+
+    async fn start_run<F>(&self, task_id: String, emit: F) -> Result<Run, String>
+    where
+        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    {
+        let task = self
+            .store
+            .get_task(task_id.clone())
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("task not found: {task_id}"))?;
+        if scheduler::resolve(&task.engine) != EngineId::Claude {
+            return Err("engine unavailable".into());
+        }
         let run_id = uuid::Uuid::new_v4().to_string();
-        let started_at = now_rfc3339();
+        let started_at = (self.clock)()
+            .to_utc()
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
 
         let (task, run) = self
             .store
@@ -87,22 +235,6 @@ impl AppState {
             })?;
 
         let engine_id = run.engine;
-        if engine_id != EngineId::Claude {
-            let _ = self
-                .store
-                .update_task(
-                    task.id,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(TaskStatus::Failed),
-                    started_at,
-                )
-                .await;
-            return Err(format!("engine {engine_id:?} is not supported yet"));
-        }
-
         let engine = match &self.claude_program {
             Some(p) => ClaudeEngine::with_program(p),
             None => ClaudeEngine::new(),
@@ -117,7 +249,17 @@ impl AppState {
             Ok(r) => r,
             Err(e) => {
                 let err_msg = e.to_string();
-                let finished_at = now_rfc3339();
+                emit(
+                    RUN_EVENT,
+                    serde_json::to_value(RunEvent::Error {
+                        run_id: run_id.clone(),
+                        message: err_msg.clone(),
+                    })
+                    .map_err(|e| e.to_string())?,
+                );
+                let finished_at = (self.clock)()
+                    .to_utc()
+                    .to_rfc3339_opts(SecondsFormat::Secs, true);
                 let _ = self
                     .store
                     .finish_run(
@@ -125,18 +267,6 @@ impl AppState {
                         finished_at.clone(),
                         crate::contract::ExitReason::Failed,
                         Usage::default(),
-                    )
-                    .await;
-                let _ = self
-                    .store
-                    .update_task(
-                        task.id,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(TaskStatus::Failed),
-                        finished_at,
                     )
                     .await;
                 return Err(err_msg);
@@ -152,7 +282,7 @@ impl AppState {
         let store = self.store.clone();
         let active_runs = self.active_runs.clone();
         let run_id_bg = run_id.clone();
-        let task_id_bg = task.id.clone();
+        let clock = self.clock.clone();
 
         tokio::spawn(async move {
             let mut events = engine_run.take_events();
@@ -185,7 +315,7 @@ impl AppState {
                                         .apply_run_event(
                                             engine_id,
                                             ev,
-                                            now_rfc3339(),
+                                            clock().to_utc().to_rfc3339_opts(SecondsFormat::Secs, true),
                                             latest_usage,
                                         )
                                         .await
@@ -208,27 +338,10 @@ impl AppState {
             }
 
             let reason = engine_run.wait().await;
-            let finished_at = now_rfc3339();
+            let finished_at = clock().to_utc().to_rfc3339_opts(SecondsFormat::Secs, true);
 
             let _ = store
                 .finish_run(run_id_bg.clone(), finished_at.clone(), reason, latest_usage)
-                .await;
-
-            let final_status = match reason {
-                crate::contract::ExitReason::Ok => TaskStatus::Done,
-                crate::contract::ExitReason::Cancelled => TaskStatus::Discarded,
-                _ => TaskStatus::Failed,
-            };
-            let _ = store
-                .update_task(
-                    task_id_bg,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(final_status),
-                    finished_at,
-                )
                 .await;
 
             if let Ok(mut lock) = active_runs.lock() {
@@ -277,6 +390,7 @@ pub async fn update_task(
     status: Option<TaskStatus>,
     state: State<'_, AppState>,
 ) -> Result<Task, String> {
+    let _guard = state.admission.lock().await;
     state
         .store
         .update_task(id, prompt, folder, size, engine, status, now_rfc3339())
@@ -286,6 +400,7 @@ pub async fn update_task(
 
 #[tauri::command]
 pub async fn delete_task(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.admission.lock().await;
     state.store.delete_task(id).await.map_err(|e| e.to_string())
 }
 
@@ -325,27 +440,59 @@ pub async fn get_meters(state: State<'_, AppState>) -> Result<Vec<MeterState>, S
     state.store.get_meters().await.map_err(|e| e.to_string())
 }
 
-pub fn spawn_meter_tick(app: AppHandle, store: Store) {
-    tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            match store.refresh_meters(now_rfc3339()).await {
-                Ok(changed) => {
-                    for m in changed {
-                        if let Ok(val) = serde_json::to_value(&m) {
-                            let _ = app.emit(METER_UPDATE, val);
-                        }
-                    }
-                }
-                Err(e) => eprintln!("meter tick: {e}"),
-            }
-        }
-    });
-}
-
 #[tauri::command]
 pub async fn get_engines(state: State<'_, AppState>) -> Result<Vec<EngineStatus>, String> {
     state.detect_engines().await
+}
+
+#[tauri::command]
+pub async fn get_schedule(state: State<'_, AppState>) -> Result<Schedule, String> {
+    state.store.get_schedule().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_schedule(schedule: Schedule, state: State<'_, AppState>) -> Result<(), String> {
+    state.set_schedule(schedule).await
+}
+
+#[tauri::command]
+pub async fn get_schedule_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<SchedulerStatus>, String> {
+    state.schedule_status().await
+}
+
+#[tauri::command]
+pub async fn run_next(
+    engine: EngineId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Run, String> {
+    state
+        .run_next(engine, move |name, payload| {
+            let _ = app.emit(name, payload);
+        })
+        .await
+}
+
+pub fn spawn_scheduler(app: AppHandle) {
+    use tauri::Manager;
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(TICK_SECS));
+        // Skip missed ticks so waking from sleep never bursts queued starts.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let handle = app.clone();
+            if let Err(e) = app
+                .state::<AppState>()
+                .scheduler_tick(move |name, payload| {
+                    let _ = handle.emit(name, payload);
+                })
+                .await
+            {
+                eprintln!("scheduler: {e}");
+            }
+        }
+    });
 }
