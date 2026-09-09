@@ -32,7 +32,7 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 
 Defaults: disabled, quiet hours `23:00` to `07:00`, reserve 25%, idle 10 minutes, max concurrent 2. `set_schedule` rejects malformed `HH:MM`, reserve outside 0..95, idle outside 0..120, and concurrency outside 1..4. It never clamps.
 
-Quiet hours use local wall time, start inclusive and end exclusive, wrapping midnight. Equal endpoints mean all day. Windows probes last input with wrapping tick arithmetic. Other platforms report Unknown, which passes the idle gate. Turning auto off prevents new starts and leaves active runs alone.
+Quiet hours are the operating window, not a mute window: `quietStart` and `quietEnd` bound the hours in which auto is permitted to start runs, and auto reports `quietHours` outside them. Both are local wall-clock `HH:MM`, start inclusive and end exclusive. The window wraps midnight, so the `23:00` to `07:00` default is one valid window and not an error. Equal endpoints mean the window is always open, never always closed. Windows probes last input with wrapping tick arithmetic. Other platforms report Unknown, which passes the idle gate. Turning auto off prevents new starts and leaves active runs alone.
 
 Every known meter window must have `remainingPct >= reservePct + margin`: S 5, M 15, L 30. `source: none` does not block. No reset-soon gate. S/M/L map to CLI effort low/medium/high and retain their existing timeouts.
 
