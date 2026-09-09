@@ -326,9 +326,13 @@ async fn r7_restart_reconciles_unfinished_run_and_task() {
         .await
         .unwrap();
     assert!(Store::open(&path).is_err());
-    assert!(store.list_runs(None).await.unwrap()[0].finished_at.is_none());
+    assert!(store.list_runs(None).await.unwrap()[0]
+        .finished_at
+        .is_none());
     assert!(store.delete_task("a".into()).await.is_err());
-    assert!(store.list_runs(None).await.unwrap()[0].finished_at.is_none());
+    assert!(store.list_runs(None).await.unwrap()[0]
+        .finished_at
+        .is_none());
     drop(store);
     let store = Store::open_at(&path, NOW).unwrap();
     let run = store.list_runs(None).await.unwrap().remove(0);
