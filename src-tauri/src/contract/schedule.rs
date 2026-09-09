@@ -9,6 +9,8 @@ pub const IDLE_MINUTES: u8 = 10;
 pub const MAX_CONCURRENT: u8 = 2;
 pub const SIZE_MARGINS: [u8; 3] = [5, 15, 30];
 pub const COOLDOWN_MINUTES: i64 = 60;
+/// Tied to the cooldown: a vendor zero must not outlive the pause it caused.
+pub const VENDOR_ZERO_EXPIRY_MINUTES: i64 = COOLDOWN_MINUTES;
 pub const MAX_LIMIT_HITS: usize = 3;
 pub const TICK_SECS: u64 = 5;
 pub const DETECT_CACHE_SECS: u64 = 300;
@@ -84,6 +86,7 @@ pub enum SchedulerReason {
     Cooldown,
     NoTasks,
     EngineUnavailable,
+    Ready,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

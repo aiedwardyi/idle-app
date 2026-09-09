@@ -36,13 +36,17 @@ Quiet hours use local wall time, start inclusive and end exclusive, wrapping mid
 
 Every known meter window must have `remainingPct >= reservePct + margin`: S 5, M 15, L 30. `source: none` does not block. No reset-soon gate. S/M/L map to CLI effort low/medium/high and retain their existing timeouts.
 
-FIFO is by `createdAt`, with `id` breaking ties. Auto resolves to Claude. Missing adapters, missing binaries, and signed-out engines wait. Detection is cached for five minutes. One unfinished run per engine, and at most `maxConcurrent` overall, including manual starts. Click, `run_next`, and auto share one start path and atomic database claim. `run_next` ignores auto, quiet hours, idle, and reserve, but honors concurrency and cooldown, as does the click.
+FIFO is by `createdAt`, with `id` breaking ties. Auto resolves to Claude. Missing adapters, missing binaries, and signed-out engines wait. Detection is cached for five minutes, and is not probed at all while auto is off or no task is queued. One unfinished run per engine, and at most `maxConcurrent` overall, including manual starts. Click, `run_next`, and auto share one start path and atomic database claim. `run_next` ignores auto, quiet hours, idle, and reserve, but honors concurrency and cooldown, as does the click.
 
-`SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
+`SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable | ready`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. A task that clears every gate reports waiting/ready: never waiting/noTasks, and never running/busy before its run exists. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
 
 A database owner holds an OS file lock before startup reconciliation. Another live instance cannot open the same database. Deleting a task with an unfinished run returns an error.
 
 A limit-hit run requeues its task on the first two hits; the third fails it. The engine pauses until the hit's reset, or hit time plus 60 minutes if absent. Cooldowns are derived from append-only `limit_hits` across restart. No other terminal outcome retries automatically.
+
+A vendor zero with no deadline expires. A `source: vendor` window at 0% whose `resetsAt` is null reverts to `source: none` with a null `remainingPct` once its `observedAt` is older than the fallback cooldown. It can never roll over, so holding it would block the reserve gate forever and strand the requeued task. This is not a guess and not a rollover: we stop asserting a stale zero we can no longer justify, the UI shows a dash, and the next run supplies a fresh reading. The expiry and the fallback cooldown share one constant so they cannot drift apart.
+
+Only a queued task is claimable. Every start path rejects any other status, so the third limit hit cannot be silently re-run.
 
 | From                                    | Trigger                                 | To        |
 | --------------------------------------- | --------------------------------------- | --------- |
@@ -52,6 +56,7 @@ A limit-hit run requeues its task on the first two hits; the third fails it. The
 | running                                 | limitHit, third or later run hit        | failed    |
 | running                                 | failed or timeout                       | failed    |
 | running                                 | cancelled                               | discarded |
+| failed, done, or discarded              | Retry must requeue before `run_now`     | queued    |
 | any task with an unfinished run at boot | Reconcile run as failed, finishedAt now | failed    |
 
 ## RunEvent lifecycle

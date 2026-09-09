@@ -37,6 +37,7 @@ pub fn resolve(engine: &EngineChoice) -> EngineId {
     }
 }
 
+/// Wall clock only. `enabled` is the caller's gate.
 pub fn within_operating_hours(schedule: &Schedule, minute: u16) -> bool {
     let (Some(start), Some(end)) = (
         minute_of_day(&schedule.quiet_start),
@@ -44,14 +45,13 @@ pub fn within_operating_hours(schedule: &Schedule, minute: u16) -> bool {
     ) else {
         return false;
     };
-    schedule.enabled
-        && if start == end {
-            true
-        } else if start < end {
-            minute >= start && minute < end
-        } else {
-            minute >= start || minute < end
-        }
+    if start == end {
+        true
+    } else if start < end {
+        minute >= start && minute < end
+    } else {
+        minute >= start || minute < end
+    }
 }
 
 pub fn decide(s: &Snapshot) -> Decision {
@@ -118,7 +118,7 @@ pub fn decide(s: &Snapshot) -> Decision {
                 SchedulerReason::Reserve
             } else {
                 result.starts.push(task.id.clone());
-                SchedulerReason::NoTasks
+                SchedulerReason::Ready
             };
             (SchedulerState::Waiting, reason)
         } else {
@@ -164,4 +164,28 @@ pub fn idle_probe() -> Idle {
 pub fn idle_probe() -> Idle {
     // TODO: macOS CGEventSourceSecondsSinceLastEvent after adding a macOS CI leg.
     Idle::Unknown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engines_lists_every_engine_id() {
+        // Exhaustive on purpose: a new EngineId variant fails to compile until it is added here and to ENGINES.
+        for engine in [
+            EngineId::Claude,
+            EngineId::Codex,
+            EngineId::Antigravity,
+            EngineId::Grok,
+        ] {
+            let listed = match engine {
+                EngineId::Claude => ENGINES.contains(&EngineId::Claude),
+                EngineId::Codex => ENGINES.contains(&EngineId::Codex),
+                EngineId::Antigravity => ENGINES.contains(&EngineId::Antigravity),
+                EngineId::Grok => ENGINES.contains(&EngineId::Grok),
+            };
+            assert!(listed, "{engine:?} missing from ENGINES");
+        }
+    }
 }

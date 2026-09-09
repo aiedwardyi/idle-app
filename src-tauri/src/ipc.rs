@@ -87,8 +87,33 @@ impl AppState {
             .map_err(|e| e.to_string())
     }
 
+    /// Probes spawn vendor CLIs, so skip them when `decide` cannot reach the detect gate anyway.
+    async fn probe_detect(&self) -> Result<Vec<EngineStatus>, String> {
+        if !self
+            .store
+            .get_schedule()
+            .await
+            .map_err(|e| e.to_string())?
+            .enabled
+        {
+            return Ok(Vec::new());
+        }
+        let queued = self
+            .store
+            .list_tasks()
+            .await
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|t| t.status == TaskStatus::Queued);
+        if queued {
+            self.detect_engines().await
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub async fn schedule_status(&self) -> Result<Vec<SchedulerStatus>, String> {
-        Ok(scheduler::decide(&self.snapshot(self.detect_engines().await?).await?).statuses)
+        Ok(scheduler::decide(&self.snapshot(self.probe_detect().await?).await?).statuses)
     }
 
     pub async fn run_next<F>(&self, engine: EngineId, emit: F) -> Result<Run, String>
@@ -112,7 +137,7 @@ impl AppState {
     where
         F: Fn(&str, serde_json::Value) + Clone + Send + Sync + 'static,
     {
-        let detect = self.detect_engines().await?;
+        let detect = self.probe_detect().await?;
         let _guard = self.admission.lock().await;
         let now = (self.clock)()
             .to_utc()

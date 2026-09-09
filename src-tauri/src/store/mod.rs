@@ -273,18 +273,25 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// A stored row that will not parse or validate falls back to the default, which has `enabled: false`.
+/// Erroring here would brick every read; `set_schedule` is where a bad value is rejected loudly.
 fn load_schedule(conn: &Connection) -> Result<Schedule, StoreError> {
     use rusqlite::OptionalExtension;
+    static WARNED: std::sync::Once = std::sync::Once::new();
     let json: Option<String> = conn
         .query_row("SELECT config FROM schedule WHERE id = 1", [], |r| r.get(0))
         .optional()?
         .flatten();
-    let schedule = json
-        .map(|s| serde_json::from_str::<Schedule>(&s))
-        .transpose()?
-        .unwrap_or_default();
-    schedule.validate().map_err(StoreError::Invalid)?;
-    Ok(schedule)
+    let Some(text) = json else {
+        return Ok(Schedule::default());
+    };
+    Ok(serde_json::from_str::<Schedule>(&text)
+        .ok()
+        .filter(|s| s.validate().is_ok())
+        .unwrap_or_else(|| {
+            WARNED.call_once(|| eprintln!("stored schedule is unusable; using defaults"));
+            Schedule::default()
+        }))
 }
 
 fn load_cooldowns(conn: &Connection, now: &str) -> Result<Vec<(EngineId, String)>, StoreError> {
@@ -699,8 +706,9 @@ impl Store {
             drop(rows);
             drop(stmt);
 
-            if task.status == TaskStatus::Running {
-                return Err(StoreError::Invalid(format!("task {task_id} is already running")));
+            // Only queued tasks are claimable, so the third limit hit cannot be silently re-run.
+            if task.status != TaskStatus::Queued {
+                return Err(StoreError::Invalid(format!("task {task_id} is not queued")));
             }
 
             let engine_id = crate::scheduler::resolve(&task.engine);

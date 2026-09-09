@@ -70,7 +70,8 @@ fn r1_quiet_hours_wrap_boundaries_all_day_and_off() {
         assert!(within_operating_hours(&s.schedule, minute));
     }
     s.schedule.enabled = false;
-    assert!(!within_operating_hours(&s.schedule, 23 * 60));
+    // The predicate answers wall clock only; decide() is what gates on enabled.
+    assert!(within_operating_hours(&s.schedule, 23 * 60));
     assert!(decide(&s).starts.is_empty());
     assert_eq!(decide(&s).statuses[0].state, SchedulerState::Off);
 }
@@ -309,7 +310,56 @@ async fn r6_limit_hit_requeues_twice_then_fails_and_cooldown_survives_restart() 
         .await
         .unwrap_err()
         .to_string()
+        .contains("not queued"));
+    store.add_task(task("b", EngineChoice::Auto)).await.unwrap();
+    assert!(store
+        .claim_task_and_insert_run("b".into(), "r5".into(), NOW.into())
+        .await
+        .unwrap_err()
+        .to_string()
         .contains("cooldown"));
+}
+
+fn five_hour(meters: &[MeterState]) -> &MeterState {
+    meters
+        .iter()
+        .find(|m| m.engine == EngineId::Claude && m.window == LimitWindowKind::FiveHour)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn r6_vendor_zero_without_a_deadline_expires_so_the_requeued_task_starts() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .apply_run_event(
+            EngineId::Claude,
+            RunEvent::LimitHit {
+                run_id: "r1".into(),
+                window: Some(LimitWindowKind::FiveHour),
+                resets_at: None,
+            },
+            NOW.into(),
+            Usage::default(),
+        )
+        .await
+        .unwrap();
+    let mut s = snapshot();
+    s.meters = store.get_meters_at(NOW.into()).await.unwrap();
+    s.cooldowns = store.cooldowns(NOW.into()).await.unwrap();
+    let hit = five_hour(&s.meters);
+    assert_eq!(hit.source, MeterSource::Vendor);
+    assert_eq!(hit.remaining_pct, Some(0.0));
+    assert_eq!(hit.resets_at, None);
+    assert_eq!(decide(&s).statuses[0].reason, SchedulerReason::Cooldown);
+
+    let later = "2026-09-03T00:30:00Z";
+    s.now = DateTime::parse_from_rfc3339(later).unwrap();
+    s.meters = store.get_meters_at(later.into()).await.unwrap();
+    s.cooldowns = store.cooldowns(later.into()).await.unwrap();
+    assert_eq!(five_hour(&s.meters).source, MeterSource::None);
+    assert_eq!(five_hour(&s.meters).remaining_pct, None);
+    assert_eq!(decide(&s).starts, vec!["a".to_string()]);
+    assert_eq!(decide(&s).statuses[0].reason, SchedulerReason::Ready);
 }
 
 #[tokio::test]
@@ -348,6 +398,8 @@ async fn r7_restart_reconciles_unfinished_run_and_task() {
 #[serial]
 async fn r9_status_emits_once_per_change_and_detect_is_cached() {
     let state = fake_state().await;
+    // Ticks skip probing while nothing is queued, so warm the detect cache explicitly.
+    assert!(state.detect_engines().await.unwrap()[0].detect.signed_in);
     let events = Arc::new(Mutex::new(Vec::new()));
     for _ in 0..3 {
         let events = events.clone();

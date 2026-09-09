@@ -132,7 +132,7 @@ async fn run_now_rejects_already_running_task() {
     store.add_task(task.clone()).await.unwrap();
 
     let err = state.run_now(task.id, |_, _| {}).await.unwrap_err();
-    assert!(err.contains("already running"));
+    assert!(err.contains("not queued"));
 }
 
 #[tokio::test]
@@ -171,5 +171,5 @@ async fn run_now_concurrent_calls_reject_duplicate() {
     assert_eq!(successes.len(), 1);
     assert_eq!(failures.len(), 1);
     let err = failures[0].as_ref().unwrap_err();
-    assert!(err.contains("already running"));
+    assert!(err.contains("not queued"));
 }
