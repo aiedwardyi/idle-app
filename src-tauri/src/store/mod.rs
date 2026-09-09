@@ -46,7 +46,7 @@ pub enum StoreError {
     NotFound(String),
     #[error("invalid: {0}")]
     Invalid(String),
-    /// A start that lost a race, not a broken store. Callers branch on this instead of matching message text.
+    /// A write that lost a race, not a broken store. Callers branch on this instead of matching message text.
     #[error("{0}")]
     ClaimRejected(String),
 }
@@ -808,7 +808,7 @@ impl Store {
         self.run(move |conn| {
             let tx = conn.transaction()?;
             let n = tx.execute(
-                "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6",
+                "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6 AND finished_at IS NULL",
                 params![
                     finished_at,
                     reason_to_str(exit_reason),
@@ -819,7 +819,16 @@ impl Store {
                 ],
             )?;
             if n == 0 {
-                return Err(StoreError::NotFound(format!("run {run_id}")));
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1)",
+                    [&run_id],
+                    |r| r.get(0),
+                )?;
+                return Err(if exists {
+                    StoreError::ClaimRejected(format!("run {run_id} is already finished"))
+                } else {
+                    StoreError::NotFound(format!("run {run_id}"))
+                });
             }
             let hits: usize = tx.query_row("SELECT COUNT(*) FROM runs WHERE task_id = (SELECT task_id FROM runs WHERE id = ?1) AND exit_reason = 'limitHit'", [&run_id], |r| r.get(0))?;
             let status = match exit_reason {

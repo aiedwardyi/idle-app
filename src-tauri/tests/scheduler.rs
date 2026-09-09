@@ -2,7 +2,7 @@ use chrono::DateTime;
 use idle_app_lib::contract::*;
 use idle_app_lib::ipc::{AppState, METER_UPDATE, SCHEDULE_STATUS, TASK_UPDATE};
 use idle_app_lib::scheduler::{decide, within_operating_hours, Idle, Snapshot};
-use idle_app_lib::store::Store;
+use idle_app_lib::store::{Store, StoreError};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -813,6 +813,51 @@ async fn terminal_outcomes_do_not_retry() {
             expected
         );
     }
+}
+
+#[tokio::test]
+async fn second_finish_on_the_same_run_is_a_no_op() {
+    let store = Store::open_in_memory().unwrap();
+    store.add_task(task("a", EngineChoice::Auto)).await.unwrap();
+    store
+        .claim_task_and_insert_run("a".into(), "r1".into(), NOW.into())
+        .await
+        .unwrap();
+    let first = store
+        .finish_run(
+            "r1".into(),
+            NOW.into(),
+            ExitReason::Ok,
+            Usage {
+                input: 10,
+                output: 20,
+                cache: 30,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status, TaskStatus::Done);
+
+    // No Task comes back, so neither ipc emit site can publish a task_update for this call.
+    let again = store
+        .finish_run(
+            "r1".into(),
+            "2026-09-03T01:00:00Z".into(),
+            ExitReason::Failed,
+            Usage::default(),
+        )
+        .await;
+    assert!(matches!(again, Err(StoreError::ClaimRejected(_))));
+
+    let runs = store.list_runs(Some("a".into())).await.unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].finished_at.as_deref(), Some(NOW));
+    assert_eq!(runs[0].exit_reason, Some(ExitReason::Ok));
+    assert_eq!(runs[0].usage.input, 10);
+    assert_eq!(
+        store.get_task("a".into()).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
 }
 
 #[tokio::test]
