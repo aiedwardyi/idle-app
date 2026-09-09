@@ -900,6 +900,40 @@ async fn background_status_changes_emit_task_update() {
 
 #[tokio::test]
 #[serial]
+async fn status_read_does_not_swallow_meter_rollover() {
+    let mut state = fake_state().await;
+    state
+        .store
+        .apply_run_event(
+            EngineId::Claude,
+            RunEvent::WindowReading {
+                run_id: "r1".into(),
+                window: LimitWindowKind::FiveHour,
+                utilization: 0.25,
+                resets_at: Some("2026-09-04T05:00:00Z".into()),
+            },
+            "2026-09-04T00:00:00Z".into(),
+            Usage::default(),
+        )
+        .await
+        .unwrap();
+    state.clock = Arc::new(|| DateTime::parse_from_rfc3339("2026-09-04T05:00:00Z").unwrap());
+    state.schedule_status().await.unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = events.clone();
+    state
+        .scheduler_tick(move |name, payload| {
+            if name == METER_UPDATE {
+                captured.lock().unwrap().push(payload);
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(events.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+#[serial]
 async fn durable_start_failure_fails_the_task_instead_of_stalling() {
     let state = fake_state().await;
     let mut t = task("a", EngineChoice::Auto);

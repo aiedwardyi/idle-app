@@ -877,6 +877,16 @@ impl Store {
         self.run(move |conn| Ok(sync_meters(conn, &now)?.all)).await
     }
 
+    pub async fn peek_meters_at(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
+        self.run(move |conn| {
+            Ok(load_all_meters(conn)?
+                .into_iter()
+                .map(|row| refresh(row, &now))
+                .collect())
+        })
+        .await
+    }
+
     pub async fn refresh_meters(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
         self.run(move |conn| Ok(sync_meters(conn, &now)?.changed))
             .await

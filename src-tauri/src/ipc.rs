@@ -76,7 +76,7 @@ impl AppState {
             idle: (self.idle)(),
             meters: self
                 .store
-                .get_meters_at(now.to_utc().to_rfc3339_opts(SecondsFormat::Secs, true))
+                .peek_meters_at(now.to_utc().to_rfc3339_opts(SecondsFormat::Secs, true))
                 .await
                 .map_err(|e| e.to_string())?,
             detect,
