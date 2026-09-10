@@ -38,6 +38,7 @@ fn main() {
         "hold-stdout" => hold_stdout_grandchild(),
         "hold-stdout-exit" => hold_stdout_then_exit(),
         "hold-pipe" => hold_pipe(),
+        "grandchild-sleep" => grandchild_sleep(),
         "fail" => fail(),
         "env" => report_env(),
         "cwd" => report_cwd(),
@@ -233,6 +234,22 @@ fn hold_pipe() {
         }
         let _ = out.flush();
     }
+}
+
+/// Parent spawns a detached sleeping grandchild, emits its pid, then sleeps forever.
+fn grandchild_sleep() {
+    let exe = std::env::current_exe().expect("current exe");
+    #[allow(clippy::zombie_processes)]
+    let grandchild = std::process::Command::new(exe)
+        .arg("sleep")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn grandchild");
+    say(&format!(r#"{{"grandchildPid":{}}}"#, grandchild.id()));
+    let _ = std::io::stdout().flush();
+    sleep_forever();
 }
 
 /// Writes to stderr and exits non-zero.

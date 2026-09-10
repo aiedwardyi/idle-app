@@ -487,3 +487,66 @@ async fn clean_exit_resolves_when_grandchild_holds_stdout() {
         })
     );
 }
+
+#[tokio::test]
+#[serial]
+#[cfg(windows)]
+async fn grandchild_dies_when_run_is_stopped() {
+    let mut handle = spawn_fake("grandchild-sleep", &ctx("r-grandchild-stop", 60));
+    let mut events = handle.take_events();
+    assert_eq!(
+        events.next().await,
+        Some(RunEvent::Started {
+            run_id: "r-grandchild-stop".to_string(),
+        })
+    );
+    let output = events.next().await;
+    let grandchild_pid: u32 = match output {
+        Some(RunEvent::Output { line, .. }) => {
+            let v: serde_json::Value = serde_json::from_str(&line).expect("json line");
+            v["grandchildPid"].as_u64().expect("grandchildPid") as u32
+        }
+        other => panic!("expected Output with grandchildPid, got {other:?}"),
+    };
+    assert!(
+        process_is_alive(grandchild_pid),
+        "grandchild {grandchild_pid} should be alive"
+    );
+    handle.kill();
+    let reason = tokio::time::timeout(Duration::from_secs(8), handle.wait())
+        .await
+        .expect("run did not stop after cancellation");
+    assert_eq!(reason, ExitReason::Cancelled);
+    wait_until_dead(grandchild_pid).await;
+}
+
+#[tokio::test]
+#[serial]
+#[cfg(windows)]
+async fn grandchild_dies_when_run_times_out() {
+    let mut handle = spawn_fake("grandchild-sleep", &ctx("r-grandchild-timeout", 1));
+    let mut events = handle.take_events();
+    assert_eq!(
+        events.next().await,
+        Some(RunEvent::Started {
+            run_id: "r-grandchild-timeout".to_string(),
+        })
+    );
+    let output = events.next().await;
+    let grandchild_pid: u32 = match output {
+        Some(RunEvent::Output { line, .. }) => {
+            let v: serde_json::Value = serde_json::from_str(&line).expect("json line");
+            v["grandchildPid"].as_u64().expect("grandchildPid") as u32
+        }
+        other => panic!("expected Output with grandchildPid, got {other:?}"),
+    };
+    assert!(
+        process_is_alive(grandchild_pid),
+        "grandchild {grandchild_pid} should be alive"
+    );
+    let reason = tokio::time::timeout(Duration::from_secs(8), handle.wait())
+        .await
+        .expect("run did not stop after timeout");
+    assert_eq!(reason, ExitReason::Timeout);
+    wait_until_dead(grandchild_pid).await;
+}

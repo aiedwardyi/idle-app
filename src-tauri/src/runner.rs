@@ -88,6 +88,8 @@ impl Runner {
         }
         let child = cmd.spawn()?;
         let pid = child.id();
+        let job = JobGuard::new();
+        job.assign(&child);
 
         // Unbounded: current engines emit a thin JSON-lines stream, so there
         // is no backpressure. Benchmark before attaching a high-volume adapter.
@@ -97,6 +99,7 @@ impl Runner {
 
         tokio::spawn(drive(
             child,
+            job,
             ctx.run_id.clone(),
             Duration::from_secs(ctx.timeout_secs),
             event_tx,
@@ -132,6 +135,7 @@ const STDERR_JOIN_BOUND: Duration = Duration::from_secs(1);
 /// ExitReason: a clean exit that drains slowly is still Ok.
 async fn drive(
     mut child: Child,
+    job: JobGuard,
     run_id: String,
     timeout: Duration,
     tx: mpsc::UnboundedSender<RunEvent>,
@@ -201,11 +205,11 @@ async fn drive(
                 // the Child, so kill_on_drop cannot fire from the handle;
                 // treat either as cancellation and stop the child.
                 early_exit = Some(ExitReason::Cancelled);
-                stop_child(&mut child);
+                stop_child(&mut child, &job);
             },
             _ = tokio::time::sleep_until(run_deadline), if early_exit.is_none() && child_status.is_none() => {
                 early_exit = Some(ExitReason::Timeout);
-                stop_child(&mut child);
+                stop_child(&mut child, &job);
             },
             _ = tokio::time::sleep_until(
                 drain_deadline.unwrap_or(run_deadline)
@@ -243,14 +247,90 @@ async fn join_bounded(task: &mut tokio::task::JoinHandle<()>, bound: Duration) {
     }
 }
 
-/// Kill the child process.
-///
-/// Windows landmine: this is TerminateProcess on the direct child only, so
-/// grandchildren survive. The engine CLIs run as the direct child here, so
-/// this is acceptable for now; a Win32 job object is the full fix if an
-/// engine ever spawns its own long-lived children.
-fn stop_child(child: &mut Child) {
+/// Kill the child process and its process tree.
+fn stop_child(child: &mut Child, job: &JobGuard) {
+    job.terminate();
+    // Direct-child fallback if unassigned, or a harmless no-op after TerminateJobObject.
     let _ = child.start_kill();
+}
+
+#[cfg(windows)]
+struct JobGuard(Option<windows_sys::Win32::Foundation::HANDLE>);
+
+#[cfg(windows)]
+unsafe impl Send for JobGuard {}
+
+#[cfg(windows)]
+impl JobGuard {
+    fn new() -> Self {
+        use windows_sys::Win32::System::JobObjects::*;
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return Self(None);
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+                return Self(None);
+            }
+            Self(Some(handle))
+        }
+    }
+
+    fn assign(&self, child: &Child) {
+        // Child can spawn before assign; closing the race needs CREATE_SUSPENDED.
+        if let (Some(handle), Some(raw)) = (self.0, child.raw_handle()) {
+            unsafe {
+                let ok = windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
+                    handle, raw as _,
+                );
+                if ok == 0 {
+                    tracing::warn!(
+                        "AssignProcessToJobObject failed; grandchild kill is best-effort"
+                    );
+                }
+            }
+        }
+    }
+
+    fn terminate(&self) {
+        if let Some(handle) = self.0 {
+            unsafe {
+                windows_sys::Win32::System::JobObjects::TerminateJobObject(handle, 1);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0 {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct JobGuard;
+
+#[cfg(not(windows))]
+impl JobGuard {
+    fn new() -> Self {
+        Self
+    }
+    fn assign(&self, _child: &Child) {}
+    fn terminate(&self) {}
 }
 
 /// Turn one stdout line into one RunEvent.
