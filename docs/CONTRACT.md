@@ -20,11 +20,47 @@ Wire shapes for idle-app. Timestamps are RFC3339 strings. JSON uses camelCase.
 | MeterSource     | `"vendor"` \| `"estimate"` \| `"none"`                                                                |
 | MeterState      | `{ engine, window, used, capacityEst, calibrated, remainingPct (f64), resetsAt, source, observedAt }` |
 | DetectInfo      | `{ installed, version, signedIn }`                                                                    |
+| Schedule        | `{ enabled, quietStart, quietEnd, reservePct, idleMinutes, maxConcurrent }`                           |
+| SchedulerStatus | `{ engine, state, reason, until }`                                                                    |
 | EngineStatus    | `{ engine, detect }`                                                                                  |
 
 `id` values are UUID strings. `folder` is an absolute path. Optional fields are `null` when absent.
 
 `MeterSource` says where `remainingPct` came from: `vendor` is the vendor payload's own number, `estimate` is computed from token sums against a learned capacity, `none` means no percent is known and the UI shows a dash.
+
+## Schedule
+
+Defaults: disabled, quiet hours `23:00` to `07:00`, reserve 25%, idle 10 minutes, max concurrent 2. `set_schedule` rejects malformed `HH:MM`, reserve outside 0..95, idle outside 0..120, and concurrency outside 1..4. It never clamps.
+
+Quiet hours are the operating window, not a mute window: `quietStart` and `quietEnd` bound the hours in which auto is permitted to start runs, and auto reports `quietHours` outside them. Both are local wall-clock `HH:MM`, start inclusive and end exclusive. The window wraps midnight, so the `23:00` to `07:00` default is one valid window and not an error. Equal endpoints mean the window is always open, never always closed. Windows probes last input with wrapping tick arithmetic. Other platforms report Unknown, which passes the idle gate. Turning auto off prevents new starts and leaves active runs alone.
+
+Every known meter window must have `remainingPct >= reservePct + margin`: S 5, M 15, L 30. `source: none` does not block. No reset-soon gate. S/M/L map to CLI effort low/medium/high and retain their existing timeouts.
+
+FIFO is by `createdAt`, with `id` breaking ties. Auto resolves to Claude. Missing adapters, missing binaries, and signed-out engines wait. Detection is cached for five minutes, and is not probed at all while auto is off or no task is queued. One unfinished run per engine, and at most `maxConcurrent` overall, including manual starts. Click, `run_next`, and auto share one start path and atomic database claim. `run_next` ignores auto, quiet hours, idle, and reserve, but honors concurrency and cooldown, as does the click.
+
+`SchedulerStatus.state` is `off | waiting | running | paused`. `reason` is `quietHours | notIdle | busy | reserve | cooldown | noTasks | engineUnavailable | ready`. `until` is the cooldown's RFC3339 deadline or null. Active engines report running/busy even with auto off; otherwise off uses noTasks. When `state` is `off` the `reason` carries no meaning and the UI renders the off state alone: `noTasks` there says nothing about the queue, which may hold tasks. A task that clears every gate reports waiting/ready: never waiting/noTasks, and never running/busy before its run exists. Status is emitted once per changed engine, including the first tick. A five-second loop skips missed ticks after sleep.
+
+A database owner holds an OS file lock before startup reconciliation. Another live instance cannot open the same database. Deleting a task with an unfinished run returns an error.
+
+A limit-hit run requeues its task on the first two hits; the third fails it. The engine pauses until the hit's reset, or hit time plus 60 minutes if absent. Cooldowns are derived from append-only `limit_hits` across restart. No other terminal outcome retries automatically.
+
+A vendor zero with no deadline expires. A `source: vendor` window at 0% whose `resetsAt` is null reverts to `source: none` with a null `remainingPct` once its `observedAt` is older than the fallback cooldown. It can never roll over, so holding it would block the reserve gate forever and strand the requeued task. This is not a guess and not a rollover: we stop asserting a stale zero we can no longer justify, the UI shows a dash, and the next run supplies a fresh reading. The expiry and the fallback cooldown share one constant so they cannot drift apart.
+
+Only a queued task is claimable. Every start path rejects any other status, so the third limit hit cannot be silently re-run.
+
+A start that loses a race is not a failure. A claim rejected because the task is no longer queued, the engine is already running, concurrency is full, or the engine is in cooldown leaves the task untouched for the next tick to re-decide. Any other start failure is durable, so auto marks the task `failed` rather than leaving it queued and reporting `waiting/ready` on every tick forever, which the status dedup would then suppress. The two are distinguished by type, never by matching error text. A run that already recorded a terminal status keeps it: auto only marks a task the failed start left queued or running.
+
+| From                                    | Trigger                                 | To        |
+| --------------------------------------- | --------------------------------------- | --------- |
+| queued                                  | Claimed by any start path               | running   |
+| running                                 | ok                                      | done      |
+| running                                 | limitHit, first or second run hit       | queued    |
+| running                                 | limitHit, third or later run hit        | failed    |
+| running                                 | failed or timeout                       | failed    |
+| running                                 | cancelled                               | discarded |
+| queued or running                       | Auto start failed durably               | failed    |
+| failed, done, or discarded              | Retry must requeue before `run_now`     | queued    |
+| any task with an unfinished run at boot | Reconcile run as failed, finishedAt now | failed    |
 
 ## RunEvent lifecycle
 
@@ -46,37 +82,47 @@ Internally tagged on `type`. Every variant carries `runId` so the UI can route u
 
 Invoke args are the object in Args. Return is the Rust/JSON value. Command and event name strings live in `src-tauri/src/ipc.rs` and are duplicated in `src/types/ipc.ts`. Change both.
 
-| Command       | Args                                                | Returns          |
-| ------------- | --------------------------------------------------- | ---------------- |
-| `list_tasks`  | (none)                                              | `Task[]`         |
-| `add_task`    | `{ prompt, folder, size, engine }`                  | `Task`           |
-| `update_task` | `{ id, prompt?, folder?, size?, engine?, status? }` | `Task`           |
-| `delete_task` | `{ id }`                                            | `null`           |
-| `run_now`     | `{ taskId }`                                        | `Run`            |
-| `stop_run`    | `{ runId }`                                         | `null`           |
-| `list_runs`   | `{ taskId? }`                                       | `Run[]`          |
-| `get_meters`  | (none)                                              | `MeterState[]`   |
-| `get_engines` | (none)                                              | `EngineStatus[]` |
+| Command               | Args                                                | Returns             |
+| --------------------- | --------------------------------------------------- | ------------------- |
+| `list_tasks`          | (none)                                              | `Task[]`            |
+| `add_task`            | `{ prompt, folder, size, engine }`                  | `Task`              |
+| `update_task`         | `{ id, prompt?, folder?, size?, engine?, status? }` | `Task`              |
+| `delete_task`         | `{ id }`                                            | `null`              |
+| `run_now`             | `{ taskId }`                                        | `Run`               |
+| `stop_run`            | `{ runId }`                                         | `null`              |
+| `list_runs`           | `{ taskId? }`                                       | `Run[]`             |
+| `get_meters`          | (none)                                              | `MeterState[]`      |
+| `get_engines`         | (none)                                              | `EngineStatus[]`    |
+| `get_schedule`        | (none)                                              | `Schedule`          |
+| `set_schedule`        | `{ schedule }`                                      | `null`              |
+| `get_schedule_status` | (none)                                              | `SchedulerStatus[]` |
+| `run_next`            | `{ engine }`                                        | `Run`               |
 
 ## Events
 
-| Event           | Payload        |
-| --------------- | -------------- |
-| `run_event`     | `RunEvent`     |
-| `meter_update`  | `MeterState`   |
-| `engine_status` | `EngineStatus` |
+| Event             | Payload           |
+| ----------------- | ----------------- |
+| `run_event`       | `RunEvent`        |
+| `meter_update`    | `MeterState`      |
+| `engine_status`   | `EngineStatus`    |
+| `schedule_status` | `SchedulerStatus` |
+| `task_update`     | `Task`            |
+
+`task_update` carries one task whenever something other than the caller changed its status: an auto start claiming it, a run settling to `done`, `failed`, or `discarded`, and a limit hit requeueing it or failing it on the third strike. Without it a task the scheduler ran overnight still reads `queued` until the app reloads, because `list_tasks` is fetched once on mount. The payload is always the row as persisted, read back after the write, so the UI never renders a status the database went on to reject. Startup reconciliation is the one status change with no event: it completes while the database opens, before any listener exists, so its result arrives in the first `list_tasks` instead.
 
 ## Schema
 
-SQLite tables: `tasks`, `runs`, `meter_state`, `limit_hits`, `schema_version`.
+SQLite tables: `tasks`, `runs`, `meter_state`, `limit_hits`, `schedule`, `schema_version`.
 
-Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`.
+Indexes: `tasks(status)`, `runs(task_id)`, `limit_hits(engine, window)`, `limit_hits(julianday(COALESCE(resets_at, hit_at)))`. Cooldown reads use the time index to exclude expired history without pruning.
 
 `limit_hits` columns: `id` (INTEGER PRIMARY KEY), `engine`, `window`, `hit_at`, `resets_at`, `used_input`, `used_output`, `used_cache`. `window` is nullable and holds `limitHit.window`, so a hit with no window evidence is still calibration ground truth. Append-only. No composite key on `(engine, window, hit_at)`: sub-second duplicate hits on the same window are allowed. Never prune.
 
-`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` is `3`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row. An older database is upgraded on open by `store::migrate`, which runs the steps above its recorded version and writes the new one.
+`schema_version` is one row: `id INTEGER PRIMARY KEY CHECK (id = 1)`, `version` is `4`. Reapplying the schema uses `INSERT OR IGNORE` and `CREATE IF NOT EXISTS`, so the version table stays one row. An older database is upgraded on open by `store::migrate`, which runs the steps above its recorded version and writes the new one.
 
 Usage on `runs` and `meter_state` is stored as `used_input`, `used_output`, `used_cache`. `meter_state` also stores `source TEXT NOT NULL DEFAULT 'none'` and `observed_at TEXT`.
+
+`schedule` has `id INTEGER PRIMARY KEY CHECK (id = 1)` and nullable `config TEXT` containing Schedule JSON. An absent row or null config uses defaults. Migration checks the table and config column independently before advancing the version.
 
 ## Default windows
 

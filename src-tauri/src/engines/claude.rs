@@ -36,7 +36,8 @@
 
 use super::{Engine, EngineError, EngineRun, EventMapper, Result, RunCtx};
 use crate::contract::{
-    default_windows, DetectInfo, EngineId, ExitReason, LimitWindow, LimitWindowKind, RunEvent, Task,
+    default_windows, DetectInfo, EngineId, ExitReason, LimitWindow, LimitWindowKind, RunEvent,
+    Task, TaskSize,
 };
 use crate::runner::{RunHandle, Runner};
 use async_trait::async_trait;
@@ -183,10 +184,7 @@ impl Engine for ClaudeEngine {
     }
 
     fn run(&self, task: &Task, ctx: RunCtx) -> Result<EngineRun> {
-        // Task.size is ignored on purpose: the scheduler maps size to an
-        // effort level in PR-14. cwd comes from ctx, which the scheduler sets
-        // to Task.folder; that folder is the edit boundary acceptEdits sees.
-        let args = run_args(&task.prompt);
+        let args = run_args(&task.prompt, task.size);
         let handle = self
             .spawn(&args, &ctx)
             .map_err(|err| EngineError::Run(format!("could not launch claude: {err}")))?;
@@ -203,12 +201,18 @@ impl Engine for ClaudeEngine {
 }
 
 /// Headless run flags. See the module docs for why each one is here.
-fn run_args(prompt: &str) -> Vec<OsString> {
+fn run_args(prompt: &str, size: TaskSize) -> Vec<OsString> {
     [
         "-p",
         "--output-format",
         "stream-json",
         "--verbose",
+        "--effort",
+        match size {
+            TaskSize::S => "low",
+            TaskSize::M => "medium",
+            TaskSize::L => "high",
+        },
         "--permission-mode",
         "acceptEdits",
         "--permission-prompts",
@@ -618,12 +622,25 @@ mod tests {
 
     #[test]
     fn run_args_use_narrow_permissions_and_separate_prompt() {
-        let args = run_args("-looks like a flag");
+        let args = run_args("-looks like a flag", TaskSize::S);
         let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(args[0], "-p");
         assert_eq!(&args[args.len() - 2..], &["--", "-looks like a flag"]);
         assert!(!args.iter().any(|a| a.contains("dangerously")));
         assert!(!args.iter().any(|a| a.contains("bypassPermissions")));
+    }
+
+    #[test]
+    fn size_maps_to_effort_level() {
+        for (size, effort) in [
+            (TaskSize::S, "low"),
+            (TaskSize::M, "medium"),
+            (TaskSize::L, "high"),
+        ] {
+            let args = run_args("task", size);
+            let at = args.iter().position(|arg| arg == "--effort").unwrap();
+            assert_eq!(args[at + 1], effort);
+        }
     }
 
     #[test]

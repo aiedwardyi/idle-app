@@ -3,7 +3,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 4);
+
+CREATE TABLE IF NOT EXISTS schedule (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    config TEXT
+);
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -63,3 +68,5 @@ CREATE TABLE IF NOT EXISTS limit_hits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_limit_hits_engine_window ON limit_hits (engine, window);
+
+CREATE INDEX IF NOT EXISTS idx_limit_hits_time ON limit_hits (julianday(COALESCE(resets_at, hit_at)));

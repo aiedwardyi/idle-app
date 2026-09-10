@@ -1525,6 +1525,7 @@ name = "idle-app"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "rusqlite",
  "serde",
@@ -1536,6 +1537,7 @@ dependencies = [
  "tokio",
  "ts-rs",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

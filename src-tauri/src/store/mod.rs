@@ -1,6 +1,6 @@
 use crate::contract::{
     default_windows, EngineChoice, EngineId, ExitReason, LimitWindowKind, MeterSource, MeterState,
-    Run, RunEvent, Task, TaskSize, TaskStatus, Usage,
+    Run, RunEvent, Schedule, Task, TaskSize, TaskStatus, Usage, COOLDOWN_MINUTES, MAX_LIMIT_HITS,
 };
 use crate::meter::{apply, refresh, seed};
 use rusqlite::{params, Connection, Row};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 pub const SCHEMA: &str = include_str!("schema.sql");
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// v1 -> v2: `limit_hits.window` becomes nullable. SQLite cannot drop a
 /// NOT NULL in place, so the table is rebuilt; nothing references it, so
@@ -46,6 +46,9 @@ pub enum StoreError {
     NotFound(String),
     #[error("invalid: {0}")]
     Invalid(String),
+    /// A write that lost a race, not a broken store. Callers branch on this instead of matching message text.
+    #[error("{0}")]
+    ClaimRejected(String),
 }
 
 impl From<StoreError> for rusqlite::Error {
@@ -260,6 +263,72 @@ fn migrate(conn: &Connection) -> Result<(), StoreError> {
         }
         conn.execute("UPDATE schema_version SET version = 3 WHERE id = 1", [])?;
     }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schedule (id INTEGER PRIMARY KEY CHECK (id = 1))",
+    )?;
+    if !table_has_column(conn, "schedule", "config")? {
+        conn.execute("ALTER TABLE schedule ADD COLUMN config TEXT", [])?;
+    }
+    if version < 4 {
+        conn.execute("UPDATE schema_version SET version = 4 WHERE id = 1", [])?;
+    }
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_limit_hits_time ON limit_hits (julianday(COALESCE(resets_at, hit_at)))", [])?;
+    Ok(())
+}
+
+/// A stored row that will not parse or validate falls back to the default, which has `enabled: false`.
+/// Erroring here would brick every read; `set_schedule` is where a bad value is rejected loudly.
+fn load_schedule(conn: &Connection) -> Result<Schedule, StoreError> {
+    use rusqlite::OptionalExtension;
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let json: Option<String> = conn
+        .query_row("SELECT config FROM schedule WHERE id = 1", [], |r| r.get(0))
+        .optional()?
+        .flatten();
+    let Some(text) = json else {
+        return Ok(Schedule::default());
+    };
+    Ok(serde_json::from_str::<Schedule>(&text)
+        .ok()
+        .filter(|s| s.validate().is_ok())
+        .unwrap_or_else(|| {
+            WARNED.call_once(|| eprintln!("stored schedule is unusable; using defaults"));
+            Schedule::default()
+        }))
+}
+
+fn load_cooldowns(conn: &Connection, now: &str) -> Result<Vec<(EngineId, String)>, StoreError> {
+    let mut stmt = conn.prepare("SELECT engine, hit_at, resets_at FROM limit_hits WHERE julianday(COALESCE(resets_at, hit_at)) >= julianday(?1) - ?2 / 1440.0")?;
+    let rows = stmt.query_map(params![now, COOLDOWN_MINUTES], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut cooldowns = Vec::new();
+    for row in rows {
+        let (engine, hit, reset) = row?;
+        let until = reset.or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(&hit)
+                .ok()
+                .map(|t| (t + chrono::Duration::minutes(COOLDOWN_MINUTES)).to_rfc3339())
+        });
+        if let Some(until) = until {
+            cooldowns.push((str_to_engine_id(&engine)?, until));
+        }
+    }
+    Ok(cooldowns)
+}
+
+fn reconcile(conn: &mut Connection, now: &str) -> Result<(), StoreError> {
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE tasks SET status = 'failed', updated_at = ?1 WHERE id IN (SELECT task_id FROM runs WHERE finished_at IS NULL)", [now])?;
+    tx.execute(
+        "UPDATE runs SET exit_reason = 'failed', finished_at = ?1 WHERE finished_at IS NULL",
+        [now],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -448,26 +517,46 @@ fn fold_run_event(
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    owner: Option<Arc<std::fs::File>>,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        Self::init(Connection::open(path)?)
+        Self::open_at(path, &now_rfc3339())
+    }
+
+    pub fn open_at(path: impl AsRef<Path>, now: &str) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        let owner = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .map_err(|e| StoreError::Lock(e.to_string()))?;
+        owner
+            .try_lock()
+            .map_err(|e| StoreError::Lock(format!("database already in use: {e}")))?;
+        let mut store = Self::init(Connection::open(path)?, now)?;
+        store.owner = Some(Arc::new(owner));
+        Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, &now_rfc3339())
     }
 
-    fn init(conn: Connection) -> Result<Self, StoreError> {
+    fn init(mut conn: Connection, now: &str) -> Result<Self, StoreError> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         seed_default_windows(&conn)?;
+        reconcile(&mut conn, now)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            owner: None,
         })
     }
 
@@ -477,7 +566,9 @@ impl Store {
         R: Send + 'static,
     {
         let conn = self.conn.clone();
+        let owner = self.owner.clone();
         tokio::task::spawn_blocking(move || {
+            let _owner = owner;
             let mut guard = conn.lock().map_err(|e| StoreError::Lock(e.to_string()))?;
             f(&mut guard)
         })
@@ -494,6 +585,22 @@ impl Store {
             Ok(tasks)
         })
         .await
+    }
+
+    pub async fn get_schedule(&self) -> Result<Schedule, StoreError> {
+        self.run(|conn| load_schedule(conn)).await
+    }
+
+    pub async fn set_schedule(&self, schedule: Schedule) -> Result<(), StoreError> {
+        schedule.validate().map_err(StoreError::Invalid)?;
+        self.run(move |conn| {
+            conn.execute("INSERT INTO schedule (id, config) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET config = excluded.config", [serde_json::to_string(&schedule)?])?;
+            Ok(())
+        }).await
+    }
+
+    pub async fn cooldowns(&self, now: String) -> Result<Vec<(EngineId, String)>, StoreError> {
+        self.run(move |conn| load_cooldowns(conn, &now)).await
     }
 
     pub async fn get_task(&self, id: String) -> Result<Option<Task>, StoreError> {
@@ -569,6 +676,14 @@ impl Store {
     pub async fn delete_task(&self, id: String) -> Result<(), StoreError> {
         self.run(move |conn| {
             let tx = conn.transaction()?;
+            let busy: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE task_id = ?1 AND finished_at IS NULL)",
+                [&id],
+                |r| r.get(0),
+            )?;
+            if busy {
+                return Err(StoreError::Invalid("cannot delete a running task".into()));
+            }
             tx.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
             tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
             tx.commit()?;
@@ -594,14 +709,24 @@ impl Store {
             drop(rows);
             drop(stmt);
 
-            if task.status == TaskStatus::Running {
-                return Err(StoreError::Invalid(format!("task {task_id} is already running")));
+            // Only queued tasks are claimable, so the third limit hit cannot be silently re-run.
+            if task.status != TaskStatus::Queued {
+                return Err(StoreError::ClaimRejected(format!("task {task_id} is not queued")));
             }
 
-            let engine_id = match task.engine {
-                EngineChoice::Fixed(id) => id,
-                EngineChoice::Auto => EngineId::Claude,
-            };
+            let engine_id = crate::scheduler::resolve(&task.engine);
+            let active: i64 = tx.query_row("SELECT COUNT(*) FROM runs WHERE finished_at IS NULL", [], |r| r.get(0))?;
+            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE engine = ?1 AND finished_at IS NULL)", [engine_id_to_str(engine_id)], |r| r.get(0))?;
+            if busy {
+                return Err(StoreError::ClaimRejected("engine already running".into()));
+            }
+            if active >= i64::from(load_schedule(&tx)?.max_concurrent) {
+                return Err(StoreError::ClaimRejected("concurrency full".into()));
+            }
+            let now = chrono::DateTime::parse_from_rfc3339(&started_at).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            if load_cooldowns(&tx, &started_at)?.iter().any(|(engine, until)| *engine == engine_id && chrono::DateTime::parse_from_rfc3339(until).is_ok_and(|t| t > now)) {
+                return Err(StoreError::ClaimRejected("engine cooldown".into()));
+            }
 
             let run = Run {
                 id: run_id,
@@ -635,8 +760,18 @@ impl Store {
                 ],
             )?;
 
+            // Re-read so callers publish the claimed row, not the queued one they matched on.
+            let mut stmt = tx.prepare(&format!("{SELECT_TASK} WHERE id = ?1"))?;
+            let mut rows = stmt.query_map(params![run.task_id], row_to_task)?;
+            let claimed = rows
+                .next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task {}", run.task_id)))?;
+            drop(rows);
+            drop(stmt);
+
             tx.commit()?;
-            Ok((task, run))
+            Ok((claimed, run))
         })
         .await
     }
@@ -669,10 +804,11 @@ impl Store {
         finished_at: String,
         exit_reason: ExitReason,
         usage: Usage,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Task, StoreError> {
         self.run(move |conn| {
-            let n = conn.execute(
-                "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6",
+            let tx = conn.transaction()?;
+            let n = tx.execute(
+                "UPDATE runs SET finished_at = ?1, exit_reason = ?2, used_input = ?3, used_output = ?4, used_cache = ?5 WHERE id = ?6 AND finished_at IS NULL",
                 params![
                     finished_at,
                     reason_to_str(exit_reason),
@@ -683,9 +819,35 @@ impl Store {
                 ],
             )?;
             if n == 0 {
-                return Err(StoreError::NotFound(format!("run {run_id}")));
+                let exists: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1)",
+                    [&run_id],
+                    |r| r.get(0),
+                )?;
+                return Err(if exists {
+                    StoreError::ClaimRejected(format!("run {run_id} is already finished"))
+                } else {
+                    StoreError::NotFound(format!("run {run_id}"))
+                });
             }
-            Ok(())
+            let hits: usize = tx.query_row("SELECT COUNT(*) FROM runs WHERE task_id = (SELECT task_id FROM runs WHERE id = ?1) AND exit_reason = 'limitHit'", [&run_id], |r| r.get(0))?;
+            let status = match exit_reason {
+                ExitReason::Ok => TaskStatus::Done,
+                ExitReason::Cancelled => TaskStatus::Discarded,
+                ExitReason::LimitHit if hits < MAX_LIMIT_HITS => TaskStatus::Queued,
+                _ => TaskStatus::Failed,
+            };
+            tx.execute("UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = (SELECT task_id FROM runs WHERE id = ?3)", params![status_to_str(status), finished_at, run_id])?;
+            let mut stmt = tx.prepare(&format!("{SELECT_TASK} WHERE id = (SELECT task_id FROM runs WHERE id = ?1)"))?;
+            let mut rows = stmt.query_map(params![run_id], row_to_task)?;
+            let task = rows
+                .next()
+                .transpose()?
+                .ok_or_else(|| StoreError::NotFound(format!("task for run {run_id}")))?;
+            drop(rows);
+            drop(stmt);
+            tx.commit()?;
+            Ok(task)
         })
         .await
     }
@@ -713,6 +875,16 @@ impl Store {
 
     pub async fn get_meters_at(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
         self.run(move |conn| Ok(sync_meters(conn, &now)?.all)).await
+    }
+
+    pub async fn peek_meters_at(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
+        self.run(move |conn| {
+            Ok(load_all_meters(conn)?
+                .into_iter()
+                .map(|row| refresh(row, &now))
+                .collect())
+        })
+        .await
     }
 
     pub async fn refresh_meters(&self, now: String) -> Result<Vec<MeterState>, StoreError> {
@@ -889,6 +1061,16 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(store2.delete_task("task-1".into()).await.is_err());
+        store2
+            .finish_run(
+                "r-task-1".into(),
+                "2026-09-04T01:00:00Z".into(),
+                ExitReason::Ok,
+                Usage::default(),
+            )
+            .await
+            .unwrap();
         store2.delete_task("task-1".into()).await.unwrap();
         let empty = store2.list_tasks().await.unwrap();
         assert!(empty.is_empty());
@@ -1304,7 +1486,7 @@ mod tests {
             .claim_task_and_insert_run("t1".into(), "r2".into(), "2026-09-04T01:00:00Z".into())
             .await
             .unwrap_err();
-        assert!(matches!(err, StoreError::Invalid(_)));
+        assert!(matches!(err, StoreError::ClaimRejected(_)));
     }
 
     #[tokio::test]

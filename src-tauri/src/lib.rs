@@ -3,6 +3,7 @@ pub mod engines;
 pub mod ipc;
 pub mod meter;
 pub mod runner;
+pub mod scheduler;
 pub mod store;
 
 use tauri::Manager;
@@ -15,7 +16,7 @@ pub fn run() {
             std::fs::create_dir_all(&app_data)?;
             let store = store::Store::open(app_data.join("idle.db"))?;
             app.manage(ipc::AppState::new(store.clone()));
-            ipc::spawn_meter_tick(app.app_handle().clone(), store);
+            ipc::spawn_scheduler(app.app_handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -28,6 +29,10 @@ pub fn run() {
             ipc::list_runs,
             ipc::get_meters,
             ipc::get_engines,
+            ipc::get_schedule,
+            ipc::set_schedule,
+            ipc::get_schedule_status,
+            ipc::run_next,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

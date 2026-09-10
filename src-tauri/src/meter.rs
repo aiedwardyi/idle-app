@@ -1,5 +1,6 @@
 use crate::contract::{
     default_windows, EngineId, LimitWindowKind, MeterSource, MeterState, RunEvent, Usage,
+    VENDOR_ZERO_EXPIRY_MINUTES,
 };
 use crate::engines::claude::rfc3339_from_unix;
 
@@ -20,8 +21,33 @@ pub fn seed(engine: EngineId, kind: LimitWindowKind) -> Option<MeterState> {
     })
 }
 
+/// A deadline-less vendor zero can never roll over, so it expires with the cooldown it caused.
+fn expired_vendor_zero(row: &MeterState, now: &str) -> bool {
+    if row.source != MeterSource::Vendor
+        || row.resets_at.is_some()
+        || !row.remaining_pct.is_some_and(|p| p <= 0.0)
+    {
+        return false;
+    }
+    match (
+        unix_secs(now),
+        row.observed_at.as_deref().and_then(unix_secs),
+    ) {
+        (Some(now), Some(seen)) => {
+            now.saturating_sub(seen) >= VENDOR_ZERO_EXPIRY_MINUTES as u64 * 60
+        }
+        _ => false,
+    }
+}
+
 /// RFC3339 UTC `YYYY-MM-DDTHH:MM:SSZ` compares lexicographically.
 pub fn refresh(mut row: MeterState, now: &str) -> MeterState {
+    if expired_vendor_zero(&row, now) {
+        // Stop asserting a stale zero we can no longer justify; the next run supplies a fresh reading.
+        row.source = MeterSource::None;
+        row.remaining_pct = None;
+        return row;
+    }
     let Some(resets_at) = row.resets_at.as_deref() else {
         return row;
     };
@@ -437,6 +463,33 @@ mod tests {
         assert_eq!(rolled.remaining_pct, Some(100.0));
         assert_eq!(rolled.source, MeterSource::Vendor);
         assert_eq!(rolled.resets_at, None);
+    }
+
+    #[test]
+    fn vendor_zero_without_a_deadline_expires_with_the_cooldown() {
+        let row = MeterState {
+            remaining_pct: Some(0.0),
+            resets_at: None,
+            source: MeterSource::Vendor,
+            calibrated: true,
+            observed_at: Some(NOW.into()),
+            ..claude_5h()
+        };
+        assert_eq!(refresh(row.clone(), "2026-09-04T00:59:59Z"), row);
+        let expired = refresh(row.clone(), "2026-09-04T01:00:00Z");
+        assert_eq!(expired.source, MeterSource::None);
+        assert_eq!(expired.remaining_pct, None);
+
+        let dated = MeterState {
+            resets_at: Some("2026-09-04T05:00:00Z".into()),
+            ..row.clone()
+        };
+        assert_eq!(refresh(dated.clone(), "2026-09-04T01:00:00Z"), dated);
+        let nonzero = MeterState {
+            remaining_pct: Some(40.0),
+            ..row
+        };
+        assert_eq!(refresh(nonzero.clone(), "2026-09-04T01:00:00Z"), nonzero);
     }
 
     #[test]

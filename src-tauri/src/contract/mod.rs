@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+mod schedule;
+pub use schedule::*;
+
 pub const SCRUBBED_ENV_VARS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -395,6 +398,8 @@ mod tests {
         EngineStatus::export_all(&cfg).unwrap();
         EngineChoice::export_all(&cfg).unwrap();
         LimitWindow::export_all(&cfg).unwrap();
+        Schedule::export_all(&cfg).unwrap();
+        SchedulerStatus::export_all(&cfg).unwrap();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/types/generated");
         let runevent = std::fs::read_to_string(dir.join("RunEvent.ts")).unwrap();
         assert!(

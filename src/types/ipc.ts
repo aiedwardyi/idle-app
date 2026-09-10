@@ -2,10 +2,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { EngineChoice } from "./generated/EngineChoice";
+import type { EngineId } from "./generated/EngineId";
 import type { EngineStatus } from "./generated/EngineStatus";
 import type { MeterState } from "./generated/MeterState";
 import type { Run } from "./generated/Run";
 import type { RunEvent } from "./generated/RunEvent";
+import type { Schedule } from "./generated/Schedule";
+import type { SchedulerStatus } from "./generated/SchedulerStatus";
 import type { Task } from "./generated/Task";
 import type { TaskSize } from "./generated/TaskSize";
 import type { TaskStatus } from "./generated/TaskStatus";
@@ -62,10 +65,40 @@ export function getEngines(): Promise<EngineStatus[]> {
   return invoke("get_engines");
 }
 
+export function getSchedule(): Promise<Schedule> {
+  return invoke("get_schedule");
+}
+
+export function setSchedule(args: { schedule: Schedule }): Promise<void> {
+  return invoke("set_schedule", args);
+}
+
+export function getScheduleStatus(): Promise<SchedulerStatus[]> {
+  return invoke("get_schedule_status");
+}
+
+export function runNext(args: { engine: EngineId }): Promise<Run> {
+  return invoke("run_next", args);
+}
+
+export function listenScheduleStatus(
+  handler: (payload: SchedulerStatus) => void,
+): Promise<UnlistenFn> {
+  return listen<SchedulerStatus>("schedule_status", (event) =>
+    handler(event.payload),
+  );
+}
+
 export function listenRunEvent(
   handler: (payload: RunEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<RunEvent>("run_event", (event) => handler(event.payload));
+}
+
+export function listenTaskUpdate(
+  handler: (payload: Task) => void,
+): Promise<UnlistenFn> {
+  return listen<Task>("task_update", (event) => handler(event.payload));
 }
 
 export function listenMeterUpdate(
