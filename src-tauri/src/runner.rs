@@ -250,6 +250,7 @@ async fn join_bounded(task: &mut tokio::task::JoinHandle<()>, bound: Duration) {
 /// Kill the child process and its process tree.
 fn stop_child(child: &mut Child, job: &JobGuard) {
     job.terminate();
+    // Direct-child fallback if unassigned, or a harmless no-op after TerminateJobObject.
     let _ = child.start_kill();
 }
 
@@ -288,7 +289,14 @@ impl JobGuard {
         // Child can spawn before assign; closing the race needs CREATE_SUSPENDED.
         if let (Some(handle), Some(raw)) = (self.0, child.raw_handle()) {
             unsafe {
-                windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(handle, raw as _);
+                let ok = windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
+                    handle, raw as _,
+                );
+                if ok == 0 {
+                    tracing::warn!(
+                        "AssignProcessToJobObject failed; grandchild kill is best-effort"
+                    );
+                }
             }
         }
     }
