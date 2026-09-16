@@ -26,6 +26,8 @@ type Props = {
   group: EngineMeters;
   selected: LimitWindowKind;
   running: boolean;
+  /** A run_next or stop_run round-trip is in flight; the button waits. */
+  busy?: boolean;
   now: Date;
   onSelectWindow: (kind: LimitWindowKind) => void;
   onToggleRun: () => void;
@@ -35,6 +37,7 @@ export function MeterRow({
   group,
   selected,
   running,
+  busy = false,
   now,
   onSelectWindow,
   onToggleRun,
@@ -42,6 +45,10 @@ export function MeterRow({
   const meter: MeterState =
     group.windows.find((w) => w.window === selected) ?? group.windows[0];
   const label = ENGINE_LABEL[group.engine];
+  // The backend runs only Claude; start_run rejects every other engine, so
+  // their Play controls stay disabled rather than failing on click. An
+  // active run keeps its Stop control whatever the engine.
+  const supported = group.engine === "claude";
   const pct = usedPct(meter);
   const level = levelFor(pct);
   const exhausted = level === "hit";
@@ -75,14 +82,16 @@ export function MeterRow({
           type="button"
           className="rowplay"
           data-running={running}
-          disabled={exhausted}
+          disabled={exhausted || busy || (!running && !supported)}
           onClick={onToggleRun}
           aria-label={
             exhausted
               ? `${label} has no headroom left`
               : running
-                ? `Pause ${label}`
-                : `Work the queue with ${label}`
+                ? `Stop ${label}`
+                : !supported
+                  ? `${label} unavailable`
+                  : `Work the queue with ${label}`
           }
         >
           <Icon name={running ? "pause" : "play"} size={11} />

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineChoice, Task } from "../types";
-import { addTask, deleteTask, listTasks, updateTask } from "../types/ipc";
+import {
+  addTask,
+  deleteTask,
+  listTasks,
+  listenTaskUpdate,
+  updateTask,
+} from "../types/ipc";
 import { isAbsolute } from "../lib/folder";
 import { message } from "../lib/errors";
 
@@ -19,20 +25,54 @@ export function useTasks() {
 
   useEffect(() => {
     let live = true;
+    let unlisten: (() => void) | undefined;
+    // Updates arriving while the snapshot loads are buffered, then replayed
+    // by task ID in arrival order. `updatedAt` has only second precision,
+    // so it cannot order a claim and its completion within one tick.
+    let snapshotReady = false;
+    const buffered: Task[] = [];
+    const applyUpdate = (list: Task[], updated: Task): Task[] => {
+      if (!list.some((t) => t.id === updated.id)) return [...list, updated];
+      return list.map((t) => (t.id === updated.id ? updated : t));
+    };
     void (async () => {
       try {
+        const stop = await listenTaskUpdate((updated) => {
+          if (!snapshotReady) buffered.push(updated);
+          else setTasks((current) => applyUpdate(current ?? [], updated));
+        });
+        if (live) unlisten = stop;
+        else {
+          stop();
+          return;
+        }
+      } catch {
+        // No channel means no live queue; the initial read still stands.
+      }
+      try {
         const list = await listTasks();
-        if (live) setTasks(list);
+        if (!live) return;
+        let next = [...list];
+        for (const updated of buffered) next = applyUpdate(next, updated);
+        buffered.length = 0;
+        snapshotReady = true;
+        setTasks(next);
       } catch (caught) {
         if (live) {
           setError(message(caught));
           // An empty array, not null: the load finished, it just failed.
-          setTasks([]);
+          // Buffered updates still apply on top of it.
+          let next: Task[] = [];
+          for (const updated of buffered) next = applyUpdate(next, updated);
+          buffered.length = 0;
+          snapshotReady = true;
+          setTasks(next);
         }
       }
     })();
     return () => {
       live = false;
+      unlisten?.();
     };
   }, []);
 

@@ -139,4 +139,50 @@ describe("MeterRow", () => {
 
     expect(screen.getByText("7d")).toBeInTheDocument();
   });
+
+  test("an active run offers Stop, not Pause", () => {
+    render(
+      <MeterRow
+        group={group([meter()])}
+        selected="fiveHour"
+        running={true}
+        now={NOW}
+        onSelectWindow={noop}
+        onToggleRun={noop}
+      />,
+    );
+
+    expect(screen.getByLabelText("Stop Claude")).toBeEnabled();
+    expect(screen.queryByLabelText("Pause Claude")).not.toBeInTheDocument();
+  });
+
+  test("an engine the backend cannot run is unavailable", () => {
+    render(
+      <MeterRow
+        group={{ engine: "codex", windows: [meter({ engine: "codex" })] }}
+        selected="fiveHour"
+        running={false}
+        now={NOW}
+        onSelectWindow={noop}
+        onToggleRun={noop}
+      />,
+    );
+
+    expect(screen.getByLabelText("Codex unavailable")).toBeDisabled();
+  });
+
+  test("an active run keeps its Stop control on any engine", () => {
+    render(
+      <MeterRow
+        group={{ engine: "codex", windows: [meter({ engine: "codex" })] }}
+        selected="fiveHour"
+        running={true}
+        now={NOW}
+        onSelectWindow={noop}
+        onToggleRun={noop}
+      />,
+    );
+
+    expect(screen.getByLabelText("Stop Codex")).toBeEnabled();
+  });
 });

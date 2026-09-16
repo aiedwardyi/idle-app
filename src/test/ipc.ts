@@ -1,4 +1,4 @@
-import type { EngineStatus, MeterState, Task } from "../types";
+import type { EngineId, EngineStatus, MeterState, Run, Task } from "../types";
 
 /**
  * Stand-in for the Tauri command layer. Tests drive the same nine commands the
@@ -11,12 +11,16 @@ export const ipc = {
   tasks: [] as Task[],
   meters: [] as MeterState[],
   engines: [] as EngineStatus[],
+  runs: [] as Run[],
   /** Command name -> error string, to make one command reject. */
   fail: {} as Record<string, string>,
+  /** Command name -> gate promise, to hold one command until released. */
+  gates: {} as Record<string, Promise<unknown>>,
   calls: [] as { cmd: string; args: Record<string, unknown> }[],
   listeners: {} as Record<string, Listener[]>,
   /** Monotonic: array length reuses an id after a delete. */
   nextId: 0,
+  nextRunId: 0,
 };
 
 const task = (id: string, prompt: string, over: Partial<Task> = {}): Task => ({
@@ -67,10 +71,13 @@ export function resetIpc(): void {
     meter("grok", "weekly", { remainingPct: 77.4 }),
   ];
   ipc.engines = [];
+  ipc.runs = [];
   ipc.fail = {};
+  ipc.gates = {};
   ipc.calls = [];
   ipc.listeners = {};
   ipc.nextId = ipc.tasks.length;
+  ipc.nextRunId = 0;
 }
 
 export function emit(event: string, payload: unknown): void {
@@ -83,6 +90,8 @@ export async function handleInvoke(
 ): Promise<unknown> {
   ipc.calls.push({ cmd, args });
   if (ipc.fail[cmd] !== undefined) throw ipc.fail[cmd];
+  const gate = ipc.gates[cmd];
+  if (gate !== undefined) await gate;
 
   switch (cmd) {
     case "list_tasks":
@@ -111,8 +120,35 @@ export async function handleInvoke(
       return [...ipc.meters];
     case "get_engines":
       return [...ipc.engines];
-    case "list_runs":
-      return [];
+    case "list_runs": {
+      const taskId = args.taskId as string | undefined;
+      return taskId === undefined
+        ? [...ipc.runs]
+        : ipc.runs.filter((r) => r.taskId === taskId);
+    }
+    case "run_next": {
+      const engine = args.engine as EngineId;
+      const queued = ipc.tasks.find((t) => t.status === "queued");
+      if (queued === undefined) throw "no queued tasks";
+      ipc.nextRunId += 1;
+      const run: Run = {
+        id: `r${ipc.nextRunId}`,
+        taskId: queued.id,
+        engine,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        exitReason: null,
+        usage: { input: 0, output: 0, cache: 0 },
+        snapshotId: null,
+      };
+      ipc.runs = [...ipc.runs, run];
+      // Claimed, so the next start takes the next task. The UI learns the
+      // status flip through task_update, not through this mutation.
+      const updatedTask: Task = { ...queued, status: "running" };
+      ipc.tasks = ipc.tasks.map((t) => (t.id === queued.id ? updatedTask : t));
+      emit("task_update", updatedTask);
+      return run;
+    }
     case "stop_run":
       return null;
     default:
