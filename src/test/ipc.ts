@@ -14,6 +14,8 @@ export const ipc = {
   runs: [] as Run[],
   /** Command name -> error string, to make one command reject. */
   fail: {} as Record<string, string>,
+  /** Command name -> gate promise, to hold one command until released. */
+  gates: {} as Record<string, Promise<unknown>>,
   calls: [] as { cmd: string; args: Record<string, unknown> }[],
   listeners: {} as Record<string, Listener[]>,
   /** Monotonic: array length reuses an id after a delete. */
@@ -71,6 +73,7 @@ export function resetIpc(): void {
   ipc.engines = [];
   ipc.runs = [];
   ipc.fail = {};
+  ipc.gates = {};
   ipc.calls = [];
   ipc.listeners = {};
   ipc.nextId = ipc.tasks.length;
@@ -87,6 +90,8 @@ export async function handleInvoke(
 ): Promise<unknown> {
   ipc.calls.push({ cmd, args });
   if (ipc.fail[cmd] !== undefined) throw ipc.fail[cmd];
+  const gate = ipc.gates[cmd];
+  if (gate !== undefined) await gate;
 
   switch (cmd) {
     case "list_tasks":
@@ -115,8 +120,12 @@ export async function handleInvoke(
       return [...ipc.meters];
     case "get_engines":
       return [...ipc.engines];
-    case "list_runs":
-      return [];
+    case "list_runs": {
+      const taskId = args.taskId as string | undefined;
+      return taskId === undefined
+        ? [...ipc.runs]
+        : ipc.runs.filter((r) => r.taskId === taskId);
+    }
     case "run_next": {
       const engine = args.engine as EngineId;
       const queued = ipc.tasks.find((t) => t.status === "queued");
@@ -135,9 +144,9 @@ export async function handleInvoke(
       ipc.runs = [...ipc.runs, run];
       // Claimed, so the next start takes the next task. The UI learns the
       // status flip through task_update, not through this mutation.
-      ipc.tasks = ipc.tasks.map((t) =>
-        t.id === queued.id ? { ...t, status: "running" } : t,
-      );
+      const updatedTask: Task = { ...queued, status: "running" };
+      ipc.tasks = ipc.tasks.map((t) => (t.id === queued.id ? updatedTask : t));
+      emit("task_update", updatedTask);
       return run;
     }
     case "stop_run":

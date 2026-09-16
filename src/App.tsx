@@ -33,7 +33,15 @@ function App() {
   // Tasks and meters come from the store now; nothing here is invented.
   const { tasks, error, add, setEngine, remove } = useTasks();
   const { meters, error: meterError } = useMeters();
-  const { runs, starting, stopping, error: runsError, start, stop } = useRuns();
+  const {
+    runs,
+    starting,
+    stopping,
+    error: runsError,
+    ready: runsReady,
+    start,
+    stop,
+  } = useRuns();
 
   useEffect(() => {
     savePriorities(priorities);
@@ -59,15 +67,6 @@ function App() {
   }, [preferences.alwaysOnTop]);
 
   const groups = useMemo(() => groupMeters(meters ?? []), [meters]);
-
-  // The reset countdowns are relative to now, so the clock has to advance on
-  // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
-  // interaction happens to re-render it. A minute is the display granularity.
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Finished, failed and discarded tasks are history, not queue. The header
   // count and the queue screen read from the same list so they cannot disagree.
@@ -101,11 +100,29 @@ function App() {
     for (const engine of Object.keys(starting) as EngineId[]) {
       if (starting[engine] === true) map[engine] = true;
     }
+    // Until run tracking is ready no start can be followed to `finished`,
+    // so every row waits rather than offering a run that would stick.
+    if (!runsReady) {
+      for (const group of groups) map[group.engine] = true;
+    }
     return map;
-  }, [activeRuns, starting, stopping]);
+  }, [activeRuns, starting, stopping, groups, runsReady]);
 
   // Working means a run is active, even if its meter just hit exhausted.
   const live = activeRuns.length;
+
+  // The reset countdowns are relative to now, so the clock has to advance on
+  // its own — otherwise a row reads "resets in 2h 14m" until some unrelated
+  // interaction happens to re-render it. Idle ticks at the minute display
+  // granularity; while runs are active Now Playing needs per-second elapsed.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(
+      () => setNow(new Date()),
+      live > 0 ? 1_000 : 60_000,
+    );
+    return () => clearInterval(timer);
+  }, [live]);
 
   const problem = error ?? meterError ?? runsError;
 
