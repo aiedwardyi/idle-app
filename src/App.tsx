@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { EngineId, LimitWindowKind } from "./types";
 import { useTasks } from "./hooks/useTasks";
 import { useMeters } from "./hooks/useMeters";
+import { useRuns } from "./hooks/useRuns";
 import { defaultFolder } from "./lib/folder";
-import { groupMeters, levelFor, usedPct } from "./lib/meters";
+import { groupMeters } from "./lib/meters";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
 import {
   loadPreferences,
@@ -26,15 +27,13 @@ function App() {
   const [selected, setSelected] = useState<
     Partial<Record<EngineId, LimitWindowKind>>
   >({});
-  const [running, setRunning] = useState<Partial<Record<EngineId, boolean>>>(
-    {},
-  );
 
   const [priorities, setPriorities] = useState(loadPriorities);
 
   // Tasks and meters come from the store now; nothing here is invented.
   const { tasks, error, add, setEngine, remove } = useTasks();
   const { meters, error: meterError } = useMeters();
+  const { runs, starting, stopping, error: runsError, start, stop } = useRuns();
 
   useEffect(() => {
     savePriorities(priorities);
@@ -81,15 +80,34 @@ function App() {
   );
   const queued = active.length;
 
-  const live = groups.filter((group) => {
-    if (!running[group.engine]) return false;
-    const window = selected[group.engine] ?? group.windows[0].window;
-    const meter =
-      group.windows.find((w) => w.window === window) ?? group.windows[0];
-    return levelFor(usedPct(meter)) !== "hit";
-  }).length;
+  // The row button reflects the real active run per engine, never a toggle.
+  const activeRuns = useMemo(() => Object.values(runs), [runs]);
+  const runByEngine = useMemo(() => {
+    const map: Partial<Record<EngineId, string>> = {};
+    for (const run of activeRuns) map[run.engine] = run.runId;
+    return map;
+  }, [activeRuns]);
+  const running = useMemo(() => {
+    const map: Partial<Record<EngineId, boolean>> = {};
+    for (const engine of Object.keys(runByEngine) as EngineId[])
+      map[engine] = true;
+    return map;
+  }, [runByEngine]);
+  const busy = useMemo(() => {
+    const map: Partial<Record<EngineId, boolean>> = {};
+    for (const run of activeRuns) {
+      if (stopping[run.runId] === true) map[run.engine] = true;
+    }
+    for (const engine of Object.keys(starting) as EngineId[]) {
+      if (starting[engine] === true) map[engine] = true;
+    }
+    return map;
+  }, [activeRuns, starting, stopping]);
 
-  const problem = error ?? meterError;
+  // Working means a run is active, even if its meter just hit exhausted.
+  const live = activeRuns.length;
+
+  const problem = error ?? meterError ?? runsError;
 
   const status =
     screen === "widget"
@@ -107,8 +125,12 @@ function App() {
   const selectWindow = (engine: EngineId, kind: LimitWindowKind) =>
     setSelected((current) => ({ ...current, [engine]: kind }));
 
-  const toggleRun = (engine: EngineId) =>
-    setRunning((current) => ({ ...current, [engine]: !current[engine] }));
+  const toggleRun = (engine: EngineId) => {
+    const runId = runByEngine[engine];
+    if (runId !== undefined) void stop(runId);
+    else void start(engine);
+  };
+  const stopById = (runId: string) => void stop(runId);
 
   return (
     <main className="widget">
@@ -131,9 +153,14 @@ function App() {
             groups={groups}
             selected={selected}
             running={running}
+            busy={busy}
             now={now}
+            nowPlaying={activeRuns}
+            tasks={tasks}
+            stopping={stopping}
             onSelectWindow={selectWindow}
             onToggleRun={toggleRun}
+            onStopRun={stopById}
           />
         )}
         {screen === "tasks" && (

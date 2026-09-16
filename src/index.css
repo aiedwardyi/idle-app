@@ -318,6 +318,68 @@ body {
     font-variant-numeric: tabular-nums;
   }
 
+  /* --- now playing ------------------------------------------------------- */
+  .nowplaying {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .np-row {
+    padding: 7px 9px 6px;
+    border-radius: 10px;
+    background: var(--w-surface-2);
+    box-shadow: inset 0 0 0 1px var(--w-ring);
+  }
+  .np-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .np-engine {
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+  .np-elapsed {
+    font-size: 0.63rem;
+    color: var(--w-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .np-stop {
+    margin-left: auto;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in oklab, var(--accent) 38%, transparent);
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.63rem;
+    font-weight: 600;
+  }
+  .np-stop:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+  }
+  .np-stop:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+  .np-task {
+    margin-top: 3px;
+    overflow: hidden;
+    font-size: 0.74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .np-line {
+    margin-top: 1px;
+    overflow: hidden;
+    font-size: 0.63rem;
+    color: var(--w-ink-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* --- queue + settings -------------------------------------------------- */
   .stack {
     display: flex;

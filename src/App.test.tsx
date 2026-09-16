@@ -463,6 +463,7 @@ describe("per-engine transport", () => {
       within(row("Codex")).getByLabelText("Work the queue with Codex"),
     );
 
+    expect(await screen.findByLabelText("Stop Codex run")).toBeInTheDocument();
     expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
     expect(
       within(row("Codex")).getByLabelText("Pause Codex"),
@@ -470,6 +471,198 @@ describe("per-engine transport", () => {
     expect(
       within(row("Claude")).getByLabelText("Work the queue with Claude"),
     ).toBeInTheDocument();
+  });
+
+  test("an active run still shows working when its meter hits exhausted", async () => {
+    const user = userEvent.setup();
+    await renderApp();
+
+    await user.click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    expect(await screen.findByLabelText("Stop Claude run")).toBeInTheDocument();
+    expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
+
+    await act(async () => {
+      emit("meter_update", {
+        engine: "claude",
+        window: "fiveHour",
+        used: { input: 1, output: 1, cache: 1 },
+        capacityEst: 100,
+        calibrated: true,
+        remainingPct: 0,
+        resetsAt: null,
+        source: "none",
+        observedAt: null,
+      });
+    });
+
+    expect(screen.getByLabelText("Stop Claude run")).toBeInTheDocument();
+    expect(screen.getByText(/1 engine working/i)).toBeInTheDocument();
+  });
+});
+
+describe("now playing", () => {
+  test("play calls run_next with the engine and shows the real run", async () => {
+    const actor = user();
+    await renderApp();
+    await actor.click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+
+    expect(ipc.calls.find((c) => c.cmd === "run_next")?.args).toEqual({
+      engine: "claude",
+    });
+    expect(await screen.findByLabelText("Stop Claude run")).toBeInTheDocument();
+    expect(
+      screen.getByText("Claude", { selector: ".np-engine" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Write tests for the CSV parser"),
+    ).toBeInTheDocument();
+    expect(document.querySelector(".np-elapsed")?.textContent).toMatch(
+      /^\d+:\d\d$/,
+    );
+    expect(
+      within(row("Claude")).getByLabelText("Pause Claude"),
+    ).toBeInTheDocument();
+  });
+
+  test("output updates the Now Playing line", async () => {
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    await screen.findByLabelText("Stop Claude run");
+    const runId = ipc.runs[0].id;
+
+    expect(screen.getByText("Starting…")).toBeInTheDocument();
+    await act(async () => {
+      emit("run_event", { type: "output", runId, line: "hello from claude" });
+    });
+    expect(screen.getByText("hello from claude")).toBeInTheDocument();
+  });
+
+  test("stop calls stop_run with the correct runId", async () => {
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    await screen.findByLabelText("Stop Claude run");
+    const runId = ipc.runs[0].id;
+
+    await user().click(screen.getByLabelText("Stop Claude run"));
+    expect(ipc.calls.find((c) => c.cmd === "stop_run")?.args).toEqual({
+      runId,
+    });
+    // A stop request waits for finished; the strip stays until then.
+    expect(screen.getByLabelText("Stop Claude run")).toBeInTheDocument();
+  });
+
+  test("finished clears the correct run", async () => {
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    await screen.findByLabelText("Stop Claude run");
+    const runId = ipc.runs[0].id;
+
+    await act(async () => {
+      emit("run_event", { type: "finished", runId, ok: true });
+    });
+    expect(screen.queryByLabelText("Stop Claude run")).not.toBeInTheDocument();
+    expect(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/paused/i)).toBeInTheDocument();
+  });
+
+  test("two runs do not share output or stop state", async () => {
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    await user().click(
+      within(row("Codex")).getByLabelText("Work the queue with Codex"),
+    );
+    await screen.findByLabelText("Stop Claude run");
+    await screen.findByLabelText("Stop Codex run");
+    const [first, second] = ipc.runs;
+
+    await act(async () => {
+      emit("run_event", {
+        type: "output",
+        runId: first.id,
+        line: "claude line",
+      });
+      emit("run_event", {
+        type: "output",
+        runId: second.id,
+        line: "codex line",
+      });
+    });
+    expect(screen.getByText("claude line")).toBeInTheDocument();
+    expect(screen.getByText("codex line")).toBeInTheDocument();
+
+    await user().click(screen.getByLabelText("Stop Claude run"));
+    const stops = ipc.calls.filter((c) => c.cmd === "stop_run");
+    expect(stops[stops.length - 1]?.args).toEqual({ runId: first.id });
+
+    await act(async () => {
+      emit("run_event", { type: "finished", runId: first.id, ok: true });
+    });
+    expect(screen.queryByLabelText("Stop Claude run")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Stop Codex run")).toBeInTheDocument();
+    expect(screen.queryByText("claude line")).not.toBeInTheDocument();
+    expect(screen.getByText("codex line")).toBeInTheDocument();
+  });
+
+  test("a failed start surfaces and leaves no active UI", async () => {
+    ipc.fail.run_next = "concurrency full";
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "concurrency full",
+    );
+    const play = within(row("Claude")).getByLabelText(
+      "Work the queue with Claude",
+    );
+    expect(play).toBeEnabled();
+    expect(screen.queryByLabelText("Stop Claude run")).not.toBeInTheDocument();
+  });
+
+  test("a failed stop surfaces and keeps the run active", async () => {
+    await renderApp();
+    await user().click(
+      within(row("Claude")).getByLabelText("Work the queue with Claude"),
+    );
+    await screen.findByLabelText("Stop Claude run");
+
+    ipc.fail.stop_run = "no such run";
+    await user().click(screen.getByLabelText("Stop Claude run"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("no such run");
+    expect(screen.getByLabelText("Stop Claude run")).toBeEnabled();
+  });
+
+  test("task_update keeps the queue and header current", async () => {
+    await renderApp();
+    await user().click(screen.getByLabelText("Queue"));
+    expect(screen.getByText(/3 queued/i)).toBeInTheDocument();
+
+    const target = ipc.tasks.find((t) => t.id === "t2");
+    if (target === undefined) throw new Error("missing fixture task");
+    await act(async () => {
+      emit("task_update", { ...target, status: "done" });
+    });
+
+    expect(
+      screen.queryByText("Write tests for the CSV parser"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/2 queued/i)).toBeInTheDocument();
   });
 });
 

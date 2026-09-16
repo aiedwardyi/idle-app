@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { MeterState } from "../types";
 import {
+  formatElapsed,
   formatTokens,
   formatUntil,
   groupMeters,
@@ -107,6 +108,30 @@ describe("formatUntil", () => {
 
   test("a reset time in the past reads as now", () => {
     expect(formatUntil("2026-09-01T11:00:00Z", now)).toBe("now");
+  });
+});
+
+describe("formatElapsed", () => {
+  const now = new Date("2026-09-01T12:00:00Z");
+
+  test("seconds pad to MP3 time", () => {
+    expect(formatElapsed("2026-09-01T11:59:53Z", now)).toBe("0:07");
+  });
+
+  test("minutes and seconds", () => {
+    expect(formatElapsed("2026-09-01T11:47:26Z", now)).toBe("12:34");
+  });
+
+  test("hours pad the minutes", () => {
+    expect(formatElapsed("2026-09-01T10:57:57Z", now)).toBe("1:02:03");
+  });
+
+  test("a future start clamps to zero", () => {
+    expect(formatElapsed("2026-09-01T12:01:00Z", now)).toBe("0:00");
+  });
+
+  test("an unparseable timestamp shows a dash", () => {
+    expect(formatElapsed("not-a-date", now)).toBe("-");
   });
 });
 

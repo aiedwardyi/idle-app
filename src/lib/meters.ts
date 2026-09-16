@@ -46,6 +46,19 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Elapsed MP3 time since a run started: "0:07", "12:34", "1:02:03". */
+export function formatElapsed(startedAt: string, now: Date): string {
+  const start = Date.parse(startedAt);
+  if (Number.isNaN(start)) return "-";
+  const total = Math.max(0, Math.floor((now.getTime() - start) / 1000));
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  if (hours > 0)
+    return `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`;
+  return `${minutes}:${seconds}`;
+}
+
 /** "2h 14m", "4d 1h", "now". Null when the backend has no reset time yet. */
 export function formatUntil(resetsAt: string | null, now: Date): string | null {
   if (resetsAt === null) return null;

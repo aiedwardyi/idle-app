@@ -26,6 +26,8 @@ type Props = {
   group: EngineMeters;
   selected: LimitWindowKind;
   running: boolean;
+  /** A run_next or stop_run round-trip is in flight; the button waits. */
+  busy?: boolean;
   now: Date;
   onSelectWindow: (kind: LimitWindowKind) => void;
   onToggleRun: () => void;
@@ -35,6 +37,7 @@ export function MeterRow({
   group,
   selected,
   running,
+  busy = false,
   now,
   onSelectWindow,
   onToggleRun,
@@ -75,7 +78,7 @@ export function MeterRow({
           type="button"
           className="rowplay"
           data-running={running}
-          disabled={exhausted}
+          disabled={exhausted || busy}
           onClick={onToggleRun}
           aria-label={
             exhausted

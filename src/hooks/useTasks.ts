@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { EngineChoice, Task } from "../types";
-import { addTask, deleteTask, listTasks, updateTask } from "../types/ipc";
+import {
+  addTask,
+  deleteTask,
+  listTasks,
+  listenTaskUpdate,
+  updateTask,
+} from "../types/ipc";
 import { isAbsolute } from "../lib/folder";
 import { message } from "../lib/errors";
 
@@ -19,6 +25,7 @@ export function useTasks() {
 
   useEffect(() => {
     let live = true;
+    let unlisten: (() => void) | undefined;
     void (async () => {
       try {
         const list = await listTasks();
@@ -30,9 +37,24 @@ export function useTasks() {
           setTasks([]);
         }
       }
+      try {
+        const stop = await listenTaskUpdate((updated) => {
+          setTasks((current) => {
+            const list = current ?? [];
+            if (!list.some((t) => t.id === updated.id))
+              return [...list, updated];
+            return list.map((t) => (t.id === updated.id ? updated : t));
+          });
+        });
+        if (live) unlisten = stop;
+        else stop();
+      } catch {
+        // No channel means no live queue; the initial read still stands.
+      }
     })();
     return () => {
       live = false;
+      unlisten?.();
     };
   }, []);
 
