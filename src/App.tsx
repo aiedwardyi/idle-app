@@ -5,6 +5,7 @@ import { useMeters } from "./hooks/useMeters";
 import { useRuns } from "./hooks/useRuns";
 import { defaultFolder } from "./lib/folder";
 import { groupMeters } from "./lib/meters";
+import { runsByTask } from "./lib/results";
 import { SCREEN_HEADING, type Screen } from "./lib/screens";
 import {
   DEFAULT_PREFERENCES,
@@ -47,21 +48,33 @@ function App() {
 
   // Real runs, not a local flag: an engine is working because a process is,
   // and it stops working when that process exits.
-  const { active, error: runError, start, stop } = useRuns(refresh);
+  const {
+    active,
+    results,
+    tails,
+    error: runError,
+    start,
+    stop,
+  } = useRuns(refresh, tasks);
 
   const byTask = useMemo(
     () =>
-      Object.fromEntries(
-        active.map((run) => [run.taskId, run.runId]),
-      ) as Record<string, string>,
+      Object.fromEntries(active.map((run) => [run.taskId, run.id])) as Record<
+        string,
+        string
+      >,
     [active],
   );
 
+  // Runs keyed by task, so each card's footer reads its own history without
+  // the list hunting through every run on every render.
+  const taskRuns = useMemo(() => runsByTask(results), [results]);
+
   const runs = useMemo(
     () =>
-      Object.fromEntries(
-        active.map((run) => [run.engine, run.runId]),
-      ) as Partial<Record<EngineId, string>>,
+      Object.fromEntries(active.map((run) => [run.engine, run.id])) as Partial<
+        Record<EngineId, string>
+      >,
     [active],
   );
 
@@ -176,15 +189,19 @@ function App() {
 
   // Finished, failed and discarded tasks are history, not queue. The header
   // count and the queue screen read from the same list so they cannot disagree.
+  // Finished tasks are history, not queue — except one this window has a run
+  // for. Dropping those the moment they exit would take the result away with
+  // them, and the result is the thing the user came back to read.
   const queue = useMemo(
     () =>
       (tasks ?? []).filter(
         (task) =>
           task.status === "queued" ||
           task.status === "running" ||
+          taskRuns[task.id] !== undefined ||
           (pro && preferences.showHistory),
       ),
-    [tasks, pro, preferences.showHistory],
+    [tasks, taskRuns, pro, preferences.showHistory],
   );
   const queued = useMemo(
     () =>
@@ -262,6 +279,8 @@ function App() {
             order={preferences.order}
             filters={pro ? filters : NO_FILTERS}
             running={byTask}
+            runs={taskRuns}
+            tails={tails}
             onFilters={setFilters}
             onRun={(task) => void start(task)}
             onStopTask={(runId) => void stop(runId)}

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { EngineChoice, Task, TaskSize } from "../types";
+import type { EngineChoice, Run, Task, TaskSize } from "../types";
 import { ENGINE_DOT, ENGINE_LABEL, ENGINE_ORDER } from "../lib/engines";
 import { folderName } from "../lib/paths";
 import {
@@ -10,6 +10,7 @@ import {
   type Priority,
 } from "../lib/priority";
 import { Icon } from "../components/Icon";
+import { TaskResult } from "../components/TaskResult";
 import { SORTS, SORT_LABEL, sortTasks, type Sort } from "../lib/sort";
 import type { Filters } from "../lib/filters";
 
@@ -46,6 +47,10 @@ type Props = {
   filters: Filters;
   /** Task id -> run id, for the ones this window has in flight. */
   running: Record<string, string>;
+  /** Task id -> its runs, live and settled, for the strip on each card. */
+  runs: Record<string, Run[]>;
+  /** Live transcript tails keyed by run id. */
+  tails: Record<string, string[]>;
   onFilters: (filters: Filters) => void;
   onRun: (task: Task) => void;
   onStopTask: (runId: string) => void;
@@ -68,6 +73,8 @@ export function Tasks({
   order,
   filters,
   running,
+  runs,
+  tails,
   onFilters,
   onRun,
   onStopTask,
@@ -291,132 +298,145 @@ export function Tasks({
               drop(task.id);
             }}
           >
-            {pro && (
-              <input
-                type="checkbox"
-                className="taskpick"
-                checked={picked.includes(task.id)}
-                aria-label={`Select ${task.prompt}`}
-                onChange={() => toggle(task.id)}
-              />
-            )}
-            {draggable && (
-              <span className="grip" aria-hidden="true">
-                ⠿
-              </span>
-            )}
+            <div className="taskmain">
+              {pro && (
+                <input
+                  type="checkbox"
+                  className="taskpick"
+                  checked={picked.includes(task.id)}
+                  aria-label={`Select ${task.prompt}`}
+                  onChange={() => toggle(task.id)}
+                />
+              )}
+              {draggable && (
+                <span className="grip" aria-hidden="true">
+                  ⠿
+                </span>
+              )}
 
-            {/* Work starts here, on a task, because run_now takes a task.
+              {/* Work starts here, on a task, because run_now takes a task.
                 Once it is running the same button stops it — the run this
                 window started is the one thing it can honestly cancel. A
                 task left `running` by some other window has neither. */}
-            <button
-              type="button"
-              className="taskplay"
-              data-running={runId !== undefined}
-              disabled={runId === undefined && task.status !== "queued"}
-              aria-label={
-                runId !== undefined
-                  ? `Stop ${task.prompt}`
-                  : task.status === "queued"
-                    ? `Run ${task.prompt}`
-                    : `${task.prompt} is already ${task.status}`
-              }
-              onClick={() =>
-                runId === undefined ? onRun(task) : onStopTask(runId)
-              }
-            >
-              <Icon name={runId === undefined ? "play" : "pause"} size={10} />
-            </button>
+              <button
+                type="button"
+                className="taskplay"
+                data-running={runId !== undefined}
+                disabled={runId === undefined && task.status !== "queued"}
+                aria-label={
+                  runId !== undefined
+                    ? `Stop ${task.prompt}`
+                    : task.status === "queued"
+                      ? `Run ${task.prompt}`
+                      : `${task.prompt} is already ${task.status}`
+                }
+                onClick={() =>
+                  runId === undefined ? onRun(task) : onStopTask(runId)
+                }
+              >
+                <Icon name={runId === undefined ? "play" : "pause"} size={10} />
+              </button>
 
-            <span className="taskbody">
-              <b>{task.prompt}</b>
-              <span className="meta">
-                <span className="dot" data-status={task.status} />
-                {task.status} ·{" "}
-                {pro ? (
+              <span className="taskbody">
+                <b>{task.prompt}</b>
+                <span className="meta">
+                  <span className="dot" data-status={task.status} />
+                  {task.status} ·{" "}
+                  {pro ? (
+                    <select
+                      className="winpick"
+                      aria-label={`Size for ${task.prompt}`}
+                      value={task.size}
+                      onChange={(event) =>
+                        onSize(task.id, event.target.value as TaskSize)
+                      }
+                    >
+                      {SIZES.map((size) => (
+                        <option key={size} value={size}>
+                          {size.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    task.size.toUpperCase()
+                  )}{" "}
+                  · {folderName(task.folder)}
+                </span>
+              </span>
+
+              {/* Engine over priority, stacked at the right edge. Priority is
+                ordinal, so it is encoded by how many bars are lit rather than
+                by hue — state and engine already spend the colour budget. */}
+              <span className="picks">
+                <label className="pick engine">
+                  <span
+                    className="dot"
+                    style={{ background: dot ?? "var(--w-ink-3)" }}
+                  />
                   <select
-                    className="winpick"
-                    aria-label={`Size for ${task.prompt}`}
-                    value={task.size}
+                    aria-label={`Engine for ${task.prompt}`}
+                    value={value}
                     onChange={(event) =>
-                      onSize(task.id, event.target.value as TaskSize)
+                      onEngine(task.id, toChoice(event.target.value))
                     }
                   >
-                    {SIZES.map((size) => (
-                      <option key={size} value={size}>
-                        {size.toUpperCase()}
+                    {CHOICES.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
                       </option>
                     ))}
                   </select>
-                ) : (
-                  task.size.toUpperCase()
-                )}{" "}
-                · {folderName(task.folder)}
+                </label>
+
+                <label
+                  className="pick prio"
+                  data-bars={PRIORITY_BARS[priority]}
+                >
+                  <Icon name="levels" size={12} />
+                  <select
+                    aria-label={`Priority for ${task.prompt}`}
+                    value={priority}
+                    onChange={(event) =>
+                      onPriority(task.id, event.target.value as Priority)
+                    }
+                  >
+                    {PRIORITIES.map((option) => (
+                      <option key={option} value={option}>
+                        {PRIORITY_LABEL[option]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </span>
-            </span>
 
-            {/* Engine over priority, stacked at the right edge. Priority is
-                ordinal, so it is encoded by how many bars are lit rather than
-                by hue — state and engine already spend the colour budget. */}
-            <span className="picks">
-              <label className="pick engine">
-                <span
-                  className="dot"
-                  style={{ background: dot ?? "var(--w-ink-3)" }}
-                />
-                <select
-                  aria-label={`Engine for ${task.prompt}`}
-                  value={value}
-                  onChange={(event) =>
-                    onEngine(task.id, toChoice(event.target.value))
-                  }
-                >
-                  {CHOICES.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="pick prio" data-bars={PRIORITY_BARS[priority]}>
-                <Icon name="levels" size={12} />
-                <select
-                  aria-label={`Priority for ${task.prompt}`}
-                  value={priority}
-                  onChange={(event) =>
-                    onPriority(task.id, event.target.value as Priority)
-                  }
-                >
-                  {PRIORITIES.map((option) => (
-                    <option key={option} value={option}>
-                      {PRIORITY_LABEL[option]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </span>
-
-            <button
-              type="button"
-              className="taskdrop"
-              aria-label={`Remove ${task.prompt}`}
-              onClick={() => onRemove(task.id)}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width={11}
-                height={11}
-                aria-hidden="true"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2.6}
-                strokeLinecap="round"
+              <button
+                type="button"
+                className="taskdrop"
+                aria-label={`Remove ${task.prompt}`}
+                onClick={() => onRemove(task.id)}
               >
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
+                <svg
+                  viewBox="0 0 24 24"
+                  width={11}
+                  height={11}
+                  aria-hidden="true"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.6}
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* The card's own footer: what this task's last run left behind.
+                Nothing is drawn until the task has run at least once. */}
+            <TaskResult
+              runs={runs[task.id] ?? []}
+              prompt={task.prompt}
+              tails={tails}
+            />
           </div>
         );
       })}

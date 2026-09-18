@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
+import type { Run } from "./types";
 import { emit, ipc } from "./test/ipc";
 
 /** Renders and waits for list_tasks / get_meters to land. */
@@ -1120,5 +1121,144 @@ describe("window switch", () => {
     const grok = row("Grok");
     expect(within(grok).queryByRole("group")).not.toBeInTheDocument();
     expect(within(grok).getByText("7d")).toBeInTheDocument();
+  });
+});
+
+describe("task status band", () => {
+  const finished = (over: Partial<Run> = {}): Run => ({
+    id: "r9",
+    taskId: "t4",
+    engine: "claude",
+    startedAt: "2026-09-01T01:00:00Z",
+    finishedAt: "2026-09-01T03:14:00Z",
+    exitReason: "ok",
+    usage: { input: 0, output: 0, cache: 0 },
+    snapshotId: null,
+    ...over,
+  });
+
+  const openQueue = async (u: ReturnType<typeof userEvent.setup>) => {
+    await u.click(screen.getByLabelText("Queue"));
+  };
+
+  /** The card for a task, found through the prompt it shows. */
+  const card = (prompt: string) =>
+    screen.getByText(prompt).closest(".task") as HTMLElement;
+
+  const band = (prompt: string) =>
+    card(prompt).querySelector(".taskfoot") as HTMLElement;
+
+  test("a task that has never run carries no band", async () => {
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+    expect(
+      card("Write tests for the CSV parser").querySelector(".taskfoot"),
+    ).toBeNull();
+  });
+
+  test("a finished run paints its own card green, with the word beside it", async () => {
+    ipc.runs = [finished()];
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+
+    const strip = band("Fix flaky snapshot on Windows CI");
+    expect(strip).toHaveAttribute("data-state", "done");
+    expect(within(strip).getByText("done · 2h")).toBeVisible();
+    // Other cards are untouched: the band belongs to one task, not the queue.
+    expect(
+      card("Write tests for the CSV parser").querySelector(".taskfoot"),
+    ).toBeNull();
+  });
+
+  test("a finished task with no run stays out of the queue", async () => {
+    // t4 is `done`. Without a run it is history and the queue drops it; the
+    // test above shows the same task kept once a run exists to speak for it.
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+    expect(
+      screen.queryByText("Fix flaky snapshot on Windows CI"),
+    ).not.toBeInTheDocument();
+  });
+
+  test("anything that is not a clean exit is red", async () => {
+    ipc.runs = [finished({ exitReason: "limitHit" })];
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+
+    const strip = band("Fix flaky snapshot on Windows CI");
+    expect(strip).toHaveAttribute("data-state", "issue");
+    expect(within(strip).getByText("limit hit · 2h")).toBeVisible();
+  });
+
+  test("a task in flight is amber, and turns green in place when it lands", async () => {
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+    await u.click(screen.getByLabelText("Run Write tests for the CSV parser"));
+
+    const prompt = "Write tests for the CSV parser";
+    expect(band(prompt)).toHaveAttribute("data-state", "ongoing");
+    expect(within(band(prompt)).getByText("running")).toBeVisible();
+
+    // The store settles the run, then the event tells the window to re-read.
+    ipc.runs = [
+      finished({
+        id: "r1",
+        taskId: "t2",
+        startedAt: "2026-09-01T06:10:00Z",
+        finishedAt: "2026-09-01T06:51:00Z",
+      }),
+    ];
+    await act(async () => {
+      emit("run_event", { type: "finished", runId: "r1", ok: true });
+    });
+
+    // Same card, same band — one run changed state rather than two appearing.
+    expect(card(prompt).querySelectorAll(".taskfoot")).toHaveLength(1);
+    expect(band(prompt)).toHaveAttribute("data-state", "done");
+    expect(within(band(prompt)).getByText("done · 41m")).toBeVisible();
+  });
+
+  test("the band opens the run's output, and undo waits on the guard", async () => {
+    const u = user();
+    await renderApp();
+    await openQueue(u);
+    const prompt = "Write tests for the CSV parser";
+    await u.click(screen.getByLabelText(`Run ${prompt}`));
+    await act(async () => {
+      emit("run_event", { type: "output", runId: "r1", line: "wrote 3 files" });
+    });
+
+    // Closed by default: the queue gains a band and no panel.
+    expect(band(prompt)).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("wrote 3 files")).not.toBeInTheDocument();
+
+    await u.click(band(prompt));
+    expect(band(prompt)).toHaveAttribute("aria-expanded", "true");
+    expect(within(card(prompt)).getByText("wrote 3 files")).toBeVisible();
+
+    // Undo is drawn but disabled: it needs the workspace guard, which is not
+    // built, so it is designed for, not wired.
+    const undo = within(card(prompt)).getByRole("button", {
+      name: `Undo ${prompt}`,
+    });
+    expect(undo).toBeDisabled();
+    expect(undo).toHaveAttribute(
+      "title",
+      "Undo needs the workspace guard, which is not built yet",
+    );
+
+    await u.click(band(prompt));
+    expect(screen.queryByText("wrote 3 files")).not.toBeInTheDocument();
+  });
+
+  test("the meters screen is untouched", async () => {
+    ipc.runs = [finished()];
+    await renderApp();
+    expect(document.querySelector(".taskfoot")).toBeNull();
   });
 });

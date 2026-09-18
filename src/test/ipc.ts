@@ -1,4 +1,4 @@
-import type { EngineStatus, MeterState, Task } from "../types";
+import type { EngineStatus, MeterState, Run, Task } from "../types";
 
 /**
  * Stand-in for the Tauri command layer. Tests drive the same nine commands the
@@ -9,6 +9,7 @@ type Listener = (payload: unknown) => void;
 
 export const ipc = {
   tasks: [] as Task[],
+  runs: [] as Run[],
   meters: [] as MeterState[],
   engines: [] as EngineStatus[],
   /** Command name -> error string, to make one command reject. */
@@ -60,6 +61,7 @@ export function resetIpc(): void {
     task("t3", "Draft the migration plan for v3", { size: "l" }),
     task("t4", "Fix flaky snapshot on Windows CI", { status: "done" }),
   ];
+  ipc.runs = [];
   ipc.meters = [
     meter("claude", "fiveHour"),
     meter("claude", "weekly", { remainingPct: 44.6 }),
@@ -121,7 +123,7 @@ export async function handleInvoke(
       ipc.tasks = ipc.tasks.map((t) =>
         t.id === found.id ? { ...t, status: "running" } : t,
       );
-      return {
+      const started: Run = {
         id: `r${ipc.nextRun}`,
         taskId: found.id,
         engine: found.engine.type === "fixed" ? found.engine.engine : "claude",
@@ -131,13 +133,15 @@ export async function handleInvoke(
         usage: { input: 0, output: 0, cache: 0 },
         snapshotId: null,
       };
+      ipc.runs = [...ipc.runs, started];
+      return started;
     }
     case "get_meters":
       return [...ipc.meters];
     case "get_engines":
       return [...ipc.engines];
     case "list_runs":
-      return [];
+      return [...ipc.runs];
     case "stop_run":
       return null;
     default:
